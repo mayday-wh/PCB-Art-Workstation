@@ -13,8 +13,9 @@
     * 支持从原图直接点击吸色。
     * 按照自定义色卡，将图片像素归类，生成色块分明的“艺术化”效果图。
     * 支持颜色方案（JSON）的导入与导出。
-    * 
-<img width="2564" height="1824" alt="1979" src="https://github.com/user-attachments/assets/2ffb930d-2734-40f3-ba2c-de8a7449a164" />
+
+![Uploading 1979.png…]()
+
 
 2.  **自动分色提取 (Color Separation)**
     * 自动识别图片中的唯一颜色。
