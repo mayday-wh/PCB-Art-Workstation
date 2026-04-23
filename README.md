@@ -10,9 +10,8 @@
 本项目集成三大核心模块，构成完整的 PCB 图像处理流水线：
 
 1.  **色彩聚类映射 (Color Mapping)**
-    * 支持从原图直接点击吸色。
+    * 从原图直接点击吸色，选择有代表性的图片颜色。
     * 按照自定义色卡，将图片像素归类，生成色块分明的“艺术化”效果图。
-    * 支持颜色方案（JSON）的导入与导出。
 
 <p align="center">
   <img width="60%" alt="UI预览1" src="https://github.com/user-attachments/assets/460ea277-151c-4d44-8efb-00f76d381d9f" />
