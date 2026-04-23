@@ -14,19 +14,25 @@
     * 按照自定义色卡，将图片像素归类，生成色块分明的“艺术化”效果图。
     * 支持颜色方案（JSON）的导入与导出。
 
-<img width="1282" height="912" alt="1979" src="https://github.com/user-attachments/assets/460ea277-151c-4d44-8efb-00f76d381d9f" />
+<p align="center">
+  <img width="60%" alt="UI预览1" src="https://github.com/user-attachments/assets/460ea277-151c-4d44-8efb-00f76d381d9f" />
+</p>
 
 2.  **自动分色提取 (Color Separation)**
     * 自动识别图片中的唯一颜色。
     * 一键将各颜色区域分离，生成独立的黑底白图（Mask），直接对接 PCB 图层素材。
 
-<img width="1282" height="912" alt="A8F1" src="https://github.com/user-attachments/assets/e0632e5c-d340-4aec-92bf-82c78312d034" />
+<p align="center">
+  <img width="60%" alt="UI预览2" src="https://github.com/user-attachments/assets/e0632e5c-d340-4aec-92bf-82c78312d034" />
+</p>
 
-3.  **逻辑运算合成 (Logic Synthesis)**
+3.  **逻辑运算去噪 (Logic Synthesis)**
     * 支持多张黑白图层的合并运算。
-    * 遵循“全黑为黑，有白则白”的逻辑，方便将多个工艺层合并。
+    * 遵循“全黑为黑，有白则白”的逻辑，方便将多个工艺层合并，并去除噪点。
 
-<img width="1282" height="912" alt="8968" src="https://github.com/user-attachments/assets/b9ee893a-7fdf-4454-a134-bf7859659223" />
+<p align="center">
+  <img width="60%" alt="UI预览3" src="https://github.com/user-attachments/assets/b9ee893a-7fdf-4454-a134-bf7859659223" />
+</p>
 
 ## 🛠️ 安装与运行
 
