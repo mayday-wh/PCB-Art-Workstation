@@ -238,6 +238,89 @@ class ImageLogicTab(tk.Frame):
             if p: self.result_img.save(p)
 
 # ==========================================
+# 模块 4: 添加宽度标定 (v2.1 优化版)
+# ==========================================
+class CalibrationTab(tk.Frame):
+    def __init__(self, master):
+        super().__init__(master)
+        self.original_img = None
+        self.result_img = None
+        self.setup_ui()
+
+    def setup_ui(self):
+        top = tk.Frame(self, pady=10, bg="#f5f5f5")
+        top.pack(side=tk.TOP, fill=tk.X)
+        tk.Button(top, text="📂 打开图片", command=self.load_image).pack(side=tk.LEFT, padx=10)
+        tk.Button(top, text="📐 生成标定", command=self.run_calibration, bg="#673AB7", fg="white").pack(side=tk.LEFT, padx=10)
+        tk.Button(top, text="💾 保存结果", command=self.save_result).pack(side=tk.LEFT, padx=10)
+
+        main = tk.Frame(self)
+        main.pack(fill=tk.BOTH, expand=True)
+
+        # 左侧面板
+        self.side = tk.LabelFrame(main, text=" 参数设置 ", padx=10, pady=10)
+        self.side.pack(side=tk.LEFT, fill=tk.Y, padx=10, pady=10)
+        self.side.config(width=250); self.side.pack_propagate(False)
+
+        tk.Label(self.side, text="标定区域尺寸 (px):", pady=5).pack(anchor="w")
+        self.size_var = tk.StringVar(value="0")
+        self.size_entry = tk.Entry(self.side, textvariable=self.size_var, font=("Consolas", 10))
+        self.size_entry.pack(fill=tk.X, pady=5)
+        
+        tk.Label(self.side, text="* 默认比例: 1/100 宽度\n* 标记形状: 等腰直角三角形\n* 作用: 锁定 EDA 导入原点与宽度", 
+                 fg="#666666", font=("微软雅黑", 9), justify=tk.LEFT).pack(anchor="w", pady=15)
+
+        # 右侧预览
+        self.preview = tk.Label(main, text="标定预览区", bg="#f9f9f9", bd=1, relief=tk.SOLID)
+        self.preview.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+    def load_image(self):
+        p = filedialog.askopenfilename(filetypes=[("图像文件", "*.png *.jpg *.jpeg *.bmp")])
+        if p:
+            self.original_img = Image.open(p).convert("L")
+            w, _ = self.original_img.size
+            # 关键修改：默认值设为 1/100
+            self.size_var.set(str(max(1, int(w / 100)))) 
+            self.show_preview(self.original_img)
+
+    def run_calibration(self):
+        if not self.original_img: return
+        try:
+            sz = int(self.size_var.get())
+        except:
+            messagebox.showerror("错误", "请输入有效的像素数值")
+            return
+
+        img_np = np.array(self.original_img)
+        h, w = img_np.shape
+        sz = min(sz, h, w // 2)
+
+        # 绘制左上角等腰直角三角形 (填充白色 255)
+        for y in range(sz):
+            img_np[y, 0 : sz - y] = 255
+        
+        # 绘制右上角等腰直角三角形
+        for y in range(sz):
+            img_np[y, w - (sz - y) : w] = 255
+
+        self.result_img = Image.fromarray(img_np)
+        self.show_preview(self.result_img)
+
+    def show_preview(self, img):
+        self.update_idletasks()
+        pw, ph = self.preview.winfo_width(), self.preview.winfo_height()
+        if pw < 10: pw, ph = 400, 300
+        scale = min(pw/img.size[0], ph/img.size[1])
+        res = img.resize((int(img.size[0]*scale), int(img.size[1]*scale)), Image.Resampling.LANCZOS)
+        tk_img = ImageTk.PhotoImage(res)
+        self.preview.config(image=tk_img, text=""); self.preview.image = tk_img
+
+    def save_result(self):
+        if self.result_img:
+            p = filedialog.asksaveasfilename(defaultextension=".png")
+            if p: self.result_img.save(p)
+
+# ==========================================
 # 主窗体整合
 # ==========================================
 class PCBMasterApp:
@@ -289,10 +372,12 @@ class PCBMasterApp:
         self.tab1 = ColorMapperTab(self.notebook)
         self.tab2 = ColorSeparatorTab(self.notebook)
         self.tab3 = ImageLogicTab(self.notebook)
+        self.tab4 = CalibrationTab(self.notebook)
 
         self.notebook.add(self.tab1, text="色彩聚类映射")
         self.notebook.add(self.tab2, text="自动分色提取")
         self.notebook.add(self.tab3, text="逻辑运算去噪")
+        self.notebook.add(self.tab4, text="添加宽度标定")
 
 if __name__ == "__main__":
     root = tk.Tk()
