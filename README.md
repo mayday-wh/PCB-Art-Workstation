@@ -1,4 +1,4 @@
-# PCB Art Workstation | PCB 艺术加工一体化工作站
+# PCB Art Assistant | PCB 艺术加工助手
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Python](https://img.shields.io/badge/python-3.8+-green.svg)
