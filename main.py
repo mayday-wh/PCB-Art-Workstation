@@ -1,0 +1,617 @@
+import tkinter as tk
+from tkinter import filedialog, messagebox, ttk, colorchooser
+from PIL import Image, ImageTk, ImageFilter
+import numpy as np
+import os
+import json
+import ctypes
+import sys
+
+# ==========================================
+# 0. 系统级环境配置
+# ==========================================
+try:
+    # 针对 Windows 平台的高 DPI 适配，防止 2K/4K 屏幕下界面模糊[cite: 3]
+    ctypes.windll.shcore.SetProcessDpiAwareness(1)
+except:
+    try: ctypes.windll.user32.SetProcessDPIAware()
+    except: pass
+
+# 核心数据库文件，存储 RGB 与物理层 (TS, TM, TL, FR4, BL, BM, BS) 的对应关系
+APP_VERSION = "3.3"
+BASE_DIR = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else os.path.dirname(os.path.abspath(__file__))
+DB_FILE = os.path.join(BASE_DIR, "colors.json")
+
+APP_BG = "#ECE4D8"
+BAR_BG = "#D8C7B3"
+PANEL_BG = "#EFE8DE"
+SURFACE_BG = "#F8F4ED"
+CARD_BG = "#FFFDF8"
+PREVIEW_BG = "#F4EFE7"
+TEXT_COLOR = "#352A24"
+MUTED_TEXT = "#6F6259"
+BORDER_COLOR = "#C8B6A2"
+PRIMARY = "#7B5E4B"
+SECONDARY = "#5F756D"
+ACCENT = "#6F7F91"
+SUCCESS = "#6C8B5E"
+DANGER = "#B45C4E"
+SELECTED = "#8D6E63"
+BUTTON_TEXT = "#FFF8EF"
+FONT_UI = ("微软雅黑", 12)
+FONT_UI_BOLD = ("微软雅黑", 12, "bold")
+FONT_SMALL = ("微软雅黑", 11)
+FONT_SMALL_BOLD = ("微软雅黑", 11, "bold")
+FONT_SECTION = ("微软雅黑", 13, "bold")
+FONT_PREVIEW = ("微软雅黑", 15, "bold")
+FONT_MONO = ("Consolas", 11)
+FONT_MONO_BOLD = ("Consolas", 11, "bold")
+FONT_MONO_LARGE = ("Consolas", 13, "bold")
+FONT_TAB = ("微软雅黑", 13, "bold")
+
+def button_style(bg=PRIMARY, fg=BUTTON_TEXT):
+    return {
+        "bg": bg,
+        "fg": fg,
+        "activebackground": bg,
+        "activeforeground": fg,
+        "relief": tk.FLAT,
+        "bd": 0,
+        "highlightthickness": 0,
+        "cursor": "hand2"
+    }
+
+def large_checkbutton(parent, variable, bg=PANEL_BG):
+    return tk.Checkbutton(
+        parent,
+        variable=variable,
+        bg=bg,
+        fg=TEXT_COLOR,
+        activebackground=bg,
+        activeforeground=TEXT_COLOR,
+        selectcolor=SURFACE_BG,
+        relief=tk.FLAT,
+        bd=0,
+        highlightthickness=0,
+        cursor="hand2"
+    )
+
+def rgb_to_hex(rgb):
+    """将 RGB 数组转换为 #RRGGBB 格式。"""
+    r, g, b = [int(c) for c in rgb[:3]]
+    return f"#{r:02X}{g:02X}{b:02X}"
+
+def nearest_palette_indices(pixels, palette, chunk_size=500000):
+    """分块计算最近调色板索引，避免大图一次性生成过大的距离矩阵。"""
+    pixels = np.asarray(pixels, dtype=np.int32)
+    palette = np.asarray(palette, dtype=np.int32)
+    idx = np.empty(pixels.shape[0], dtype=np.intp)
+
+    for start in range(0, pixels.shape[0], chunk_size):
+        end = min(start + chunk_size, pixels.shape[0])
+        diff = pixels[start:end, np.newaxis, :] - palette[np.newaxis, :, :]
+        dist = np.sum(diff * diff, axis=2)
+        idx[start:end] = np.argmin(dist, axis=1)
+
+    return idx
+
+def init_db():
+    """初始化 JSON 数据库，确保程序启动时数据路径有效[cite: 3]"""
+    if not os.path.exists(DB_FILE):
+        with open(DB_FILE, 'w', encoding='utf-8') as f:
+            json.dump([], f)
+
+def load_recipes():
+    """读取本地色卡数据库；文件为空或损坏时返回空列表，避免 UI 崩溃。"""
+    init_db()
+    try:
+        with open(DB_FILE, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else []
+    except (json.JSONDecodeError, OSError):
+        return []
+
+def save_recipes(data):
+    """写入本地色卡数据库。"""
+    with open(DB_FILE, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=4)
+
+# ==========================================
+# 模块 1: 色卡录入 (Recipe Recorder)
+# ==========================================
+class RecipeRecorderTab(tk.Frame):
+    """
+    该模块负责通过实拍照片采样，建立 PCB 物理层叠与视觉颜色的对应表。
+    """
+    def __init__(self, master):
+        super().__init__(master)
+        self.configure(bg=APP_BG)
+        self.ref_img = None        # 载入的原始图片对象
+        self.scale_factor = 1.0     # 预览缩放比例，用于点击坐标还原到原图坐标
+        self.temp_rgb = [128, 128, 128] # 当前选中的 RGB 颜色
+        self.phys_layers = ["TS", "TM", "TL", "FR4", "BL", "BM", "BS"] # 7大物理层级
+        self.setup_ui()
+        self.refresh_list()
+
+    def setup_ui(self):
+        """构建录入界面的 UI 布局"""
+        # --- 顶部工具栏 ---
+        top_bar = tk.Frame(self, pady=10, bg=BAR_BG)
+        top_bar.pack(side=tk.TOP, fill=tk.X)
+        tk.Button(top_bar, text="载入照片", command=self.load_image, font=FONT_UI_BOLD, padx=16, pady=7, **button_style(PRIMARY)).pack(side=tk.LEFT, padx=15)
+
+        # --- 主显示区 (左右分栏) ---
+        main_content = tk.Frame(self, bg=APP_BG)
+        main_content.pack(fill=tk.BOTH, expand=True)
+
+        # 左侧控制面板 (固定 560px 宽度，给 HEX 信息留出横向空间)
+        self.side_panel = tk.Frame(main_content, padx=20, pady=15, width=560, bg=PANEL_BG)
+        self.side_panel.pack(side=tk.LEFT, fill=tk.Y)
+        self.side_panel.pack_propagate(False)
+
+        # 1. 配方录入区
+        setup_frame = tk.LabelFrame(self.side_panel, text=" 配方录入区 ", padx=15, pady=16, font=FONT_SECTION, bg=PANEL_BG, fg=TEXT_COLOR, highlightbackground=BORDER_COLOR)
+        setup_frame.pack(side=tk.TOP, fill=tk.X, pady=5)
+
+        # 下拉框容器：使用 grid 实现平分对齐
+        header_f = tk.Frame(setup_frame, bg=PANEL_BG)
+        header_f.pack(fill=tk.X)
+        header_f.columnconfigure(0, weight=1); header_f.columnconfigure(1, weight=1)
+
+        self.mask_var = tk.StringVar(value="蓝色"); self.mode_var = tk.StringVar(value="无背光")
+        
+        self.m_cb = ttk.Combobox(header_f, textvariable=self.mask_var, values=["蓝色", "绿色", "黄色", "红色", "紫色", "白色", "黑色"], state="readonly", font=FONT_UI)
+        self.m_cb.grid(row=0, column=0, sticky="ew", padx=(0, 5))
+        self.m_cb.bind("<<ComboboxSelected>>", lambda e: self.refresh_list())
+        
+        self.mode_cb = ttk.Combobox(header_f, textvariable=self.mode_var, values=["无背光", "有背光"], state="readonly", font=FONT_UI)
+        self.mode_cb.grid(row=0, column=1, sticky="ew", padx=(5, 0))
+        self.mode_cb.bind("<<ComboboxSelected>>", lambda e: self.refresh_list())
+
+        # 选中色显示/调色盘入口
+        self.cur_color_lab = tk.Label(setup_frame, text="点击打开色盘/取色", bg=SURFACE_BG, fg=MUTED_TEXT, relief=tk.SOLID, bd=1, pady=14, font=FONT_UI_BOLD, cursor="hand2")
+        self.cur_color_lab.pack(fill=tk.X, pady=16)
+        self.cur_color_lab.bind("<Button-1>", self.pick_color_from_palette)
+
+        # 物理层级勾选框 (TS 到 BS)
+        cb_container = tk.Frame(setup_frame, bg=PANEL_BG)
+        cb_container.pack(fill=tk.X, pady=10)
+        self.layer_vars = []
+        for i, name in enumerate(self.phys_layers):
+            unit = tk.Frame(cb_container, bg=PANEL_BG); unit.pack(side=tk.LEFT, expand=True)
+            var = tk.IntVar(); self.layer_vars.append(var)
+            if i == 3: var.set(1) # 默认勾选 FR4 基板层
+            large_checkbutton(unit, var).pack(side=tk.TOP, pady=(0, 4))
+            tk.Label(unit, text=name, font=FONT_MONO_LARGE, fg=TEXT_COLOR, bg=PANEL_BG).pack(side=tk.TOP)
+
+        tk.Button(setup_frame, text="录入当前色块配方", command=self.save_recipe, font=FONT_UI_BOLD, pady=10, **button_style(SECONDARY)).pack(fill=tk.X, pady=(16, 8))
+
+        # 2. 本地数据库展示区 (带 Canvas 宽度同步逻辑)
+        list_frame = tk.LabelFrame(self.side_panel, text=" 本地数据库 (分类筛选) ", padx=10, pady=10, font=FONT_SECTION, bg=PANEL_BG, fg=TEXT_COLOR, highlightbackground=BORDER_COLOR)
+        list_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True, pady=5)
+        
+        self.list_canvas = tk.Canvas(list_frame, highlightthickness=0, bg=SURFACE_BG)
+        self.scroll_y = tk.Scrollbar(list_frame, orient="vertical", command=self.list_canvas.yview)
+        self.scroll_inner = tk.Frame(self.list_canvas, bg=SURFACE_BG)
+        
+        # 核心：通过绑定 Configure 确保列表条目宽度始终横向撑满 Canvas
+        self.canvas_win = self.list_canvas.create_window((0, 0), window=self.scroll_inner, anchor="nw")
+        self.list_canvas.bind('<Configure>', self._on_canvas_configure)
+        self.scroll_inner.bind("<Configure>", lambda e: self.list_canvas.configure(scrollregion=self.list_canvas.bbox("all")))
+        self.list_canvas.bind("<Enter>", self._bind_list_mousewheel)
+        self.list_canvas.bind("<Leave>", self._unbind_list_mousewheel)
+        self.scroll_inner.bind("<Enter>", self._bind_list_mousewheel)
+        self.scroll_inner.bind("<Leave>", self._unbind_list_mousewheel)
+        self.list_canvas.configure(yscrollcommand=self.scroll_y.set)
+        self.list_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.scroll_y.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # 右侧照片预览
+        self.preview_label = tk.Label(main_content, text="照片预览区", bg=PREVIEW_BG, fg=MUTED_TEXT, bd=1, relief=tk.SOLID, font=FONT_PREVIEW)
+        self.preview_label.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=22, pady=22)
+        self.preview_label.bind("<Button-1>", self.on_click_eye_dropper)
+
+    def _on_canvas_configure(self, event):
+        """强制内部列表框架宽度等于 Canvas 宽度，解决缩放导致的宽度塌陷"""
+        self.list_canvas.itemconfig(self.canvas_win, width=event.width)
+
+    def _bind_list_mousewheel(self, event):
+        self.list_canvas.bind_all("<MouseWheel>", self._on_list_mousewheel)
+
+    def _unbind_list_mousewheel(self, event):
+        self.list_canvas.unbind_all("<MouseWheel>")
+
+    def _on_list_mousewheel(self, event):
+        self.list_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+    def pick_color_from_palette(self, event):
+        """弹出系统调色盘"""
+        color = colorchooser.askcolor(title="选择颜色", initialcolor='#%02x%02x%02x'%tuple(self.temp_rgb))
+        if color[0]:
+            self.temp_rgb = [int(c) for c in color[0]]
+            hex_color = rgb_to_hex(self.temp_rgb)
+            self.cur_color_lab.config(bg=hex_color, text=f"选中色:{self.temp_rgb}  {hex_color}", fg=BUTTON_TEXT if sum(self.temp_rgb)<380 else TEXT_COLOR)
+
+    def load_image(self):
+        """载入色卡扫描件/照片"""
+        p = filedialog.askopenfilename()
+        if p:
+            self.ref_img = Image.open(p).convert("RGB")
+            self.show_preview(self.ref_img)
+
+    def show_preview(self, img):
+        """自适应显示图片预览"""
+        self.update_idletasks()
+        pw, ph = self.preview_label.winfo_width(), self.preview_label.winfo_height()
+        if pw < 10: pw, ph = 800, 600
+        self.scale_factor = min(pw/img.size[0], ph/img.size[1])
+        res = img.resize((int(img.size[0]*self.scale_factor), int(img.size[1]*self.scale_factor)), Image.Resampling.LANCZOS)
+        tk_img = ImageTk.PhotoImage(res)
+        self.preview_label.config(image=tk_img, text=""); self.preview_label.image = tk_img
+
+    def on_click_eye_dropper(self, event):
+        """吸管工具：根据缩放比例计算并在原图上采样 RGB"""
+        if self.ref_img is None: return
+        lw, lh = self.preview_label.winfo_width(), self.preview_label.winfo_height()
+        iw, ih = int(self.ref_img.size[0]*self.scale_factor), int(self.ref_img.size[1]*self.scale_factor)
+        ox, oy = (lw-iw)/2, (lh-ih)/2
+        if ox <= event.x <= ox+iw and oy <= event.y <= oy+ih:
+            rx, ry = int((event.x-ox)/self.scale_factor), int((event.y-oy)/self.scale_factor)
+            self.temp_rgb = list(self.ref_img.getpixel((rx, ry)))[:3]
+            hex_color = rgb_to_hex(self.temp_rgb)
+            self.cur_color_lab.config(bg=hex_color, text=f"选中色:{self.temp_rgb}  {hex_color}", fg=BUTTON_TEXT if sum(self.temp_rgb)<380 else TEXT_COLOR)
+
+    def save_recipe(self):
+        """配方存档逻辑"""
+        recipe = {
+            "mask": self.mask_var.get(), "mode": self.mode_var.get(), "rgb": self.temp_rgb,
+            "layers": [v.get() for v in self.layer_vars],
+            "layer_str": ",".join([self.phys_layers[i] for i, v in enumerate(self.layer_vars) if v.get()])
+        }
+        data = load_recipes()
+        data.append(recipe)
+        save_recipes(data)
+        self.refresh_list()
+
+    def refresh_list(self):
+        """实时渲染已保存的色卡列表，按分类自动筛选"""
+        for w in self.scroll_inner.winfo_children(): w.destroy()
+        all_data = load_recipes()
+        filtered = [r for r in all_data if r["mask"] == self.mask_var.get() and r["mode"] == self.mode_var.get()]
+        for r in filtered:
+            f = tk.Frame(self.scroll_inner, bg=CARD_BG, pady=7, bd=1, relief=tk.SOLID, highlightbackground=BORDER_COLOR)
+            f.pack(fill=tk.X, pady=3, padx=6)
+            hex_color = rgb_to_hex(r["rgb"])
+            tk.Label(f, bg=hex_color, width=5, height=2).pack(side=tk.LEFT, padx=(12, 8))
+            tk.Label(f, text=hex_color, font=FONT_MONO_BOLD, bg=CARD_BG, fg=TEXT_COLOR, width=9, anchor="w").pack(side=tk.LEFT)
+            tk.Label(f, text=f"{r['layer_str']}", font=FONT_UI, bg=CARD_BG, fg=TEXT_COLOR, anchor="w").pack(side=tk.LEFT, fill=tk.X, expand=True)
+            tk.Button(f, text="×", command=lambda item=r: self.delete_entry(item), font=FONT_UI_BOLD, fg=DANGER, bg=CARD_BG, activeforeground=DANGER, activebackground=CARD_BG, bd=0, cursor="hand2").pack(side=tk.RIGHT, padx=14)
+        self.list_canvas.config(scrollregion=self.list_canvas.bbox("all"))
+
+    def delete_entry(self, item):
+        """从数据库移除项目"""
+        data = load_recipes()
+        if item in data:
+            data.remove(item)
+            save_recipes(data)
+        self.refresh_list()
+
+# ==========================================
+# 模块 2: 色彩聚集 (Color Mapper)
+# ==========================================
+class ColorMapperTab(tk.Frame):
+    """
+    色彩映射模块：将原图色块聚集到物理层叠，并生成带标定的黑白生产图纸[cite: 3]。
+    """
+    def __init__(self, master):
+        super().__init__(master)
+        self.configure(bg=APP_BG)
+        self.available_recipes = []
+        self.mapping = {}
+        self.original_img = None
+        self.active_recipe_idx = None
+        
+        # v3.3 标定控制变量[cite: 3]
+        self.mark_tl = tk.IntVar(value=0)
+        self.mark_tr = tk.IntVar(value=0)
+        self.mark_bl = tk.IntVar(value=0)
+        self.mark_br = tk.IntVar(value=0)
+        self.mark_size_var = tk.StringVar(value="0")
+        self.denoise_var = tk.IntVar(value=0)
+        
+        self.setup_ui()
+
+    def setup_ui(self):
+        """构建映射界面的 UI 布局"""
+        top_bar = tk.Frame(self, pady=10, bg=BAR_BG)
+        top_bar.pack(side=tk.TOP, fill=tk.X)
+        self.mask_var = tk.StringVar(value="蓝色"); self.mode_var = tk.StringVar(value="无背光")
+        
+        ttk.Combobox(top_bar, textvariable=self.mask_var, values=["蓝色", "绿色", "黄色", "红色", "紫色", "白色", "黑色"], state="readonly", width=10, font=FONT_UI).pack(side=tk.LEFT, padx=10)
+        ttk.Combobox(top_bar, textvariable=self.mode_var, values=["无背光", "有背光"], state="readonly", width=10, font=FONT_UI).pack(side=tk.LEFT, padx=5)
+        
+        tk.Button(top_bar, text="提取色卡", command=self.fetch_recipes, font=FONT_UI_BOLD, padx=14, pady=7, **button_style(PRIMARY)).pack(side=tk.LEFT, padx=8)
+        tk.Button(top_bar, text="载入图片", command=self.load_image, font=FONT_UI_BOLD, padx=14, pady=7, **button_style(SECONDARY)).pack(side=tk.LEFT, padx=8)
+        tk.Button(top_bar, text="效果预览", command=self.process_alchemy, font=FONT_UI_BOLD, padx=14, pady=7, **button_style(ACCENT)).pack(side=tk.LEFT, padx=8)
+        tk.Button(top_bar, text="导出图纸", command=self.export_layers, font=FONT_UI_BOLD, padx=14, pady=7, **button_style(SUCCESS)).pack(side=tk.LEFT, padx=8)
+
+        # 原点标定设置移到顶部菜单，避免被长色卡列表挤到侧栏底部。
+        self.cal_frame = tk.Frame(top_bar, padx=10, pady=4, bg=BAR_BG, highlightbackground=BORDER_COLOR, highlightthickness=1)
+        self.cal_frame.pack(side=tk.LEFT, padx=(8, 10), pady=0)
+
+        tk.Label(self.cal_frame, text="原点标定设置", bg=BAR_BG, fg=TEXT_COLOR, font=FONT_UI_BOLD).pack(side=tk.LEFT, padx=(0, 12))
+
+        mark_grid = tk.Frame(self.cal_frame, bg=BAR_BG)
+        mark_grid.pack(side=tk.LEFT)
+
+        corners = [("左上", self.mark_tl), ("右上", self.mark_tr), ("左下", self.mark_bl), ("右下", self.mark_br)]
+        for i, (name, var) in enumerate(corners):
+            mark_grid.columnconfigure(i, weight=1)
+            unit = tk.Frame(mark_grid, bg=BAR_BG)
+            unit.grid(row=0, column=i, sticky="ew", padx=5)
+            large_checkbutton(unit, var, bg=BAR_BG).pack(side=tk.TOP, pady=(0, 3))
+            tk.Label(unit, text=name, bg=BAR_BG, fg=TEXT_COLOR, font=FONT_UI).pack(side=tk.TOP)
+
+        size_frame = tk.Frame(self.cal_frame, bg=BAR_BG)
+        size_frame.pack(side=tk.LEFT, padx=(14, 0))
+        tk.Label(size_frame, text="标定边长(px)", bg=BAR_BG, fg=TEXT_COLOR, font=FONT_UI).pack(side=tk.TOP)
+        tk.Entry(size_frame, textvariable=self.mark_size_var, font=FONT_MONO_LARGE, width=6, justify=tk.CENTER).pack(side=tk.TOP, pady=(2, 0))
+
+        denoise_frame = tk.Frame(top_bar, padx=10, pady=4, bg=BAR_BG, highlightbackground=BORDER_COLOR, highlightthickness=1)
+        denoise_frame.pack(side=tk.LEFT, padx=(0, 10), pady=0)
+        tk.Label(denoise_frame, text="导出降噪设置", bg=BAR_BG, fg=TEXT_COLOR, font=FONT_UI_BOLD).pack(side=tk.LEFT, padx=(0, 10))
+        large_checkbutton(denoise_frame, self.denoise_var, bg=BAR_BG).pack(side=tk.LEFT)
+
+        main = tk.Frame(self, bg=APP_BG)
+        main.pack(fill=tk.BOTH, expand=True)
+
+        # 带有滚动功能的侧边面板
+        self.side_outer = tk.Frame(main, width=560, bg=PANEL_BG)
+        self.side_outer.pack(side=tk.LEFT, fill=tk.Y)
+        self.side_outer.pack_propagate(False)
+        
+        self.side_canvas = tk.Canvas(self.side_outer, highlightthickness=0, bg=PANEL_BG)
+        self.side_inner = tk.Frame(self.side_canvas, bg=PANEL_BG)
+        
+        self.side_canvas_win = self.side_canvas.create_window((0, 0), window=self.side_inner, anchor="nw")
+        self.side_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.side_canvas.bind('<Configure>', lambda e: self.side_canvas.itemconfig(self.side_canvas_win, width=e.width))
+        self.side_inner.bind("<Configure>", lambda e: self.side_canvas.configure(scrollregion=self.side_canvas.bbox("all")))
+        self.side_canvas.bind("<Enter>", self._bind_mapping_mousewheel)
+        self.side_canvas.bind("<Leave>", self._unbind_mapping_mousewheel)
+        self.side_inner.bind("<Enter>", self._bind_mapping_mousewheel)
+        self.side_inner.bind("<Leave>", self._unbind_mapping_mousewheel)
+
+        # 映射配对区
+        self.map_frame = tk.LabelFrame(self.side_inner, text=" 色彩映射区 ", padx=15, pady=16, font=FONT_SECTION, bg=PANEL_BG, fg=TEXT_COLOR, highlightbackground=BORDER_COLOR)
+        self.map_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=10)
+        self.list_frame = tk.Frame(self.map_frame, bg=PANEL_BG)
+        self.list_frame.pack(fill=tk.BOTH, expand=True)
+        self.list_frame.bind("<Enter>", self._bind_mapping_mousewheel)
+        self.list_frame.bind("<Leave>", self._unbind_mapping_mousewheel)
+
+        # 双预览视窗
+        preview_frame = tk.Frame(main, bg=APP_BG)
+        preview_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
+        self.left_label = tk.Label(preview_frame, text="原图预览", bg=PREVIEW_BG, fg=MUTED_TEXT, bd=1, relief=tk.SOLID, font=FONT_PREVIEW)
+        self.left_label.place(relx=0.01, rely=0.02, relwidth=0.48, relheight=0.96)
+        self.left_label.bind("<Button-1>", self.on_src_click)
+        self.right_label = tk.Label(preview_frame, text="效果预览", bg=PREVIEW_BG, fg=MUTED_TEXT, bd=1, relief=tk.SOLID, font=FONT_PREVIEW)
+        self.right_label.place(relx=0.51, rely=0.02, relwidth=0.48, relheight=0.96)
+
+    def _bind_mapping_mousewheel(self, event):
+        self.side_canvas.bind_all("<MouseWheel>", self._on_mapping_mousewheel)
+
+    def _unbind_mapping_mousewheel(self, event):
+        self.side_canvas.unbind_all("<MouseWheel>")
+
+    def _on_mapping_mousewheel(self, event):
+        self.side_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+    def fetch_recipes(self):
+        """同步库色配方"""
+        all_data = load_recipes()
+        self.available_recipes = [r for r in all_data if r["mask"] == self.mask_var.get() and r["mode"] == self.mode_var.get()]
+        self.mapping = {i: None for i in range(len(self.available_recipes))}
+        self.active_recipe_idx = None
+        self.left_label.config(highlightthickness=0)
+        self.refresh_mapping_list(preserve_scroll=False)
+        self.side_canvas.configure(scrollregion=self.side_canvas.bbox("all"))
+
+    def refresh_mapping_list(self, preserve_scroll=True):
+        """渲染映射关系列表"""
+        scroll_pos = self.side_canvas.yview()[0] if preserve_scroll else 0
+        for w in self.list_frame.winfo_children(): w.destroy()
+        for i, r in enumerate(self.available_recipes):
+            f = tk.Frame(self.list_frame, pady=7, bd=1, relief=tk.SOLID, bg=CARD_BG, highlightbackground=BORDER_COLOR)
+            f.pack(fill=tk.X, pady=3, padx=2)
+            recipe_hex = rgb_to_hex(r["rgb"])
+            mapped_rgb = self.mapping[i]
+            mapped_hex = rgb_to_hex(mapped_rgb) if mapped_rgb else "未映射"
+
+            tk.Label(f, bg=recipe_hex, width=5, height=2).pack(side=tk.LEFT, padx=(12, 8))
+            tk.Label(f, text=recipe_hex, font=FONT_MONO_BOLD, bg=CARD_BG, fg=TEXT_COLOR, width=9, anchor="w").pack(side=tk.LEFT)
+            tk.Button(f, text="映射", font=FONT_SMALL_BOLD, padx=10, pady=4, command=lambda idx=i: self.set_active(idx), **button_style(PRIMARY)).pack(side=tk.LEFT, padx=8)
+            tk.Button(
+                f,
+                text="取消",
+                font=FONT_SMALL,
+                command=lambda idx=i: self.clear_mapping(idx),
+                state=tk.NORMAL if mapped_rgb else tk.DISABLED,
+                fg=DANGER,
+                bg=CARD_BG,
+                activeforeground=DANGER,
+                activebackground=CARD_BG,
+                relief=tk.FLAT,
+                bd=0,
+                cursor="hand2"
+            ).pack(side=tk.RIGHT, padx=(4, 12))
+            tk.Label(f, text=mapped_hex, font=FONT_MONO_BOLD, bg=CARD_BG, fg=TEXT_COLOR, width=9, anchor="w").pack(side=tk.RIGHT, padx=(4, 6))
+            if mapped_rgb:
+                tk.Label(f, bg=rgb_to_hex(mapped_rgb), width=5, height=2).pack(side=tk.RIGHT, padx=(4, 0))
+        self.side_canvas.configure(scrollregion=self.side_canvas.bbox("all"))
+        self.side_canvas.yview_moveto(scroll_pos)
+
+    def set_active(self, idx):
+        """激活取色状态"""
+        self.active_recipe_idx = idx
+        self.left_label.config(highlightbackground=SELECTED, highlightthickness=4)
+
+    def clear_mapping(self, idx):
+        """取消指定色卡的原图颜色映射。"""
+        self.mapping[idx] = None
+        if getattr(self, "active_recipe_idx", None) == idx:
+            self.active_recipe_idx = None
+            self.left_label.config(highlightthickness=0)
+        self.refresh_mapping_list()
+
+    def on_src_click(self, event):
+        """原图色块采样"""
+        if self.active_recipe_idx is None or not self.original_img: return
+        w, h = self.left_label.winfo_width(), self.left_label.winfo_height()
+        sw, sh = self.original_img.size
+        scale = min(w/sw, h/sh)
+        ox, oy = (w-sw*scale)/2, (h-sh*scale)/2
+        rx, ry = int((event.x-ox)/scale), int((event.y-oy)/scale)
+        if 0 <= rx < sw and 0 <= ry < sh:
+            self.mapping[self.active_recipe_idx] = list(self.original_img.getpixel((rx, ry)))[:3]
+            self.refresh_mapping_list()
+
+    def load_image(self):
+        """原图载入并自动计算 1/100 标定尺寸[cite: 3]"""
+        p = filedialog.askopenfilename()
+        if p:
+            self.original_img = Image.open(p).convert("RGB")
+            self.mark_size_var.set(str(max(1, int(self.original_img.size[0] / 100)))) 
+            self.show_view(self.original_img, self.left_label)
+
+    def show_view(self, img, label):
+        self.update_idletasks()
+        w, h = label.winfo_width(), label.winfo_height()
+        if w < 10 or h < 10:
+            w, h = 800, 600
+        scale = min(w/img.size[0], h/img.size[1])
+        tk_img = ImageTk.PhotoImage(img.resize((int(img.size[0]*scale), int(img.size[1]*scale))))
+        label.config(image=tk_img, text=""); label.image = tk_img
+
+    def process_alchemy(self):
+        """色彩聚集核心算法：基于欧几里德距离的最近邻重采样"""
+        if not self.original_img: return
+        pairs = [(self.mapping[i], self.available_recipes[i]["rgb"]) for i in self.mapping if self.mapping[i]]
+        if not pairs: return
+        data = np.array(self.original_img); pixels = data.reshape(-1, 3)
+        src_pal = np.array([p[0] for p in pairs], dtype=np.uint8)
+        dst_pal = np.array([p[1] for p in pairs], dtype=np.uint8)
+        idx = nearest_palette_indices(pixels, src_pal)
+        res = dst_pal[idx].reshape(data.shape).astype(np.uint8)
+        self.show_view(Image.fromarray(res), self.right_label)
+
+    def export_layers(self):
+        """
+        物理层导出核心逻辑：
+        v3.3 特色：跳过空图层（全黑）以及全覆盖图层（全白），仅保留有图案内容的中间层。[cite: 3]
+        """
+        if not self.original_img: return
+        valid = [i for i in self.mapping if self.mapping[i]]
+        if not valid: return
+        d = filedialog.askdirectory()
+        if not d: return
+        
+        data = np.array(self.original_img); pixels = data.reshape(-1, 3)
+        src_pal = np.array([self.mapping[i] for i in valid], dtype=np.uint8)
+        idx = nearest_palette_indices(pixels, src_pal)
+        
+        names = ["TS", "TM", "TL", "BL", "BM", "BS"]; p_idxs = [0,1,2,4,5,6] # 排除固定的 FR4
+        try:
+            sz = max(0, int(self.mark_size_var.get()))
+        except ValueError:
+            sz = 0
+        
+        for i, pi in enumerate(p_idxs):
+            l_map = np.array([self.available_recipes[vi]["layers"][pi] for vi in valid])
+            
+            # --- v3.3 双向过滤逻辑 ---
+            if not np.any(l_map > 0): continue    # 过滤空层[cite: 3]
+            if np.all(l_map > 0): continue        # 过滤全覆盖层[cite: 3]
+            
+            # 生成 0/255 的黑白像素数据
+            bw_data = (l_map[idx] * 255).reshape(data.shape[:2]).astype(np.uint8)
+            h, w = bw_data.shape
+
+            if self.denoise_var.get():
+                bw_data = np.array(Image.fromarray(bw_data).filter(ImageFilter.MedianFilter(size=3)))
+            
+            # 添加物理标定点（三角形定位符）[cite: 3]
+            if sz > 0:
+                s = min(sz, h, w // 2)
+                if self.mark_tl.get():
+                    for y in range(s): bw_data[y, 0:s-y] = 255
+                if self.mark_tr.get():
+                    for y in range(s): bw_data[y, w-(s-y):w] = 255
+                if self.mark_bl.get():
+                    for y in range(s): bw_data[h-s+y, 0:s-y] = 255
+                if self.mark_br.get():
+                    for y in range(s): bw_data[h-s+y, w-(s-y):w] = 255
+            
+            Image.fromarray(bw_data).save(os.path.join(d, f"Layer_{names[i]}.png"))
+            
+        denoise_text = "，并已应用导出降噪" if self.denoise_var.get() else ""
+        messagebox.showinfo("完成", f"导出成功：已自动过滤无图案的空层与全覆盖层{denoise_text}。")
+
+# ==========================================
+# 主程序生命周期管理
+# ==========================================
+class PCBMasterApp:
+    def __init__(self, root):
+        init_db()
+        self.root = root
+        self.root.title(f"PCB 艺术助手 v{APP_VERSION}")
+        self.root.configure(bg=APP_BG)
+        
+        # 0.6x 屏幕比例的窗口初始化逻辑[cite: 3]
+        sw = self.root.winfo_screenwidth(); sh = self.root.winfo_screenheight()
+        ww, wh = int(sw * 0.6), int(sh * 0.6)
+        self.root.geometry(f"{ww}x{wh}+{(sw-ww)//2}+{(sh-wh)//2}")
+        self.root.minsize(1024, 768)
+        
+        # 全局样式深度配置 (CSS 风格封装)
+        style = ttk.Style(); style.theme_use("clam")
+        
+        # 下拉框高度同步修正：通过内边距 padding 强制撑起外框[cite: 3]
+        style.configure(
+            "TCombobox",
+            padding=9,
+            font=FONT_UI,
+            fieldbackground=SURFACE_BG,
+            background=SURFACE_BG,
+            foreground=TEXT_COLOR,
+            arrowcolor=TEXT_COLOR,
+            bordercolor=BORDER_COLOR,
+            lightcolor=BORDER_COLOR,
+            darkcolor=BORDER_COLOR
+        )
+        style.map("TCombobox", fieldbackground=[("readonly", SURFACE_BG)], selectbackground=[("readonly", BAR_BG)], selectforeground=[("readonly", TEXT_COLOR)])
+        self.root.option_add('*TCombobox*Listbox.font', FONT_UI)
+        self.root.option_add('*TCombobox*Listbox.background', SURFACE_BG)
+        self.root.option_add('*TCombobox*Listbox.foreground', TEXT_COLOR)
+        self.root.option_add('*TCombobox*Listbox.selectBackground', SELECTED)
+        self.root.option_add('*TCombobox*Listbox.selectForeground', BUTTON_TEXT)
+        
+        # 标签页 Tab 样式锁定：禁止选中时的形变
+        style.configure("TNotebook", background=APP_BG, borderwidth=0)
+        style.configure("TNotebook.Tab", padding=[52, 18], font=FONT_TAB, background=BAR_BG, foreground=TEXT_COLOR, bordercolor=BORDER_COLOR)
+        style.map("TNotebook.Tab", background=[("selected", SELECTED)], foreground=[("selected", BUTTON_TEXT)], padding=[("selected", [52, 18])], expand=[("selected", [0, 0, 0, 0])]) 
+
+        self.notebook = ttk.Notebook(self.root)
+        self.notebook.pack(fill=tk.BOTH, expand=True, padx=12, pady=12)
+        
+        # 加载核心功能模块
+        self.notebook.add(RecipeRecorderTab(self.notebook), text="色卡录入")
+        self.notebook.add(ColorMapperTab(self.notebook), text="色彩聚集")
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    # 全局 UI 缩放因子设置，完美适配 Windows 10/11 的缩放百分比[cite: 3]
+    root.tk.call('tk', 'scaling', 1.75) 
+    app = PCBMasterApp(root)
+    root.mainloop()

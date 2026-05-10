@@ -1,12 +1,18 @@
 [project]
-name = "yellow"
-version = "0.1.0"
-description = "Add your description here"
-readme = "README.md"
+name = "pcb-art-assistant"
+version = "3.3.0"
+description = "PCB artwork assistant for color recipe recording, palette mapping, and layer image export."
+readme = "README .md"
 requires-python = ">=3.13"
 dependencies = [
     "numpy>=2.4.4",
-    "opencv-python>=4.13.0.92",
     "pillow>=12.2.0",
+]
+
+[project.optional-dependencies]
+build = [
     "pyinstaller>=6.19.0",
+]
+legacy = [
+    "opencv-python>=4.13.0.92",
 ]
