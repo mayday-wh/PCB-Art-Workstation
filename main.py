@@ -18,7 +18,7 @@ except:
     except: pass
 
 # 核心数据库文件，存储 RGB 与物理层 (TS, TM, TL, FR4, BL, BM, BS) 的对应关系
-APP_VERSION = "3.3"
+APP_VERSION = "4.0"
 BASE_DIR = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else os.path.dirname(os.path.abspath(__file__))
 DB_FILE = os.path.join(BASE_DIR, "colors.json")
 
@@ -47,7 +47,35 @@ FONT_PREVIEW = ("微软雅黑", 15, "bold")
 FONT_MONO = ("Consolas", 11)
 FONT_MONO_BOLD = ("Consolas", 11, "bold")
 FONT_MONO_LARGE = ("Consolas", 13, "bold")
-FONT_TAB = ("微软雅黑", 13, "bold")
+FONT_TAB = ("微软雅黑", 16, "bold")
+UI_SCALE = 1.0
+BASE_TK_SCALING = 1.75
+
+def sx(value):
+    """Scale fixed pixel values while keeping very small positive values visible."""
+    scaled = int(round(value * UI_SCALE))
+    if value > 0:
+        return max(1, scaled)
+    if value < 0:
+        return min(-1, scaled)
+    return 0
+
+def sp(values):
+    return tuple(sx(v) for v in values)
+
+def configure_screen_scaling(root):
+    """Apply one screen-based scale to the window, Tk fonts, and fixed pixel spacing."""
+    global UI_SCALE
+    screen_w = root.winfo_screenwidth()
+    screen_h = root.winfo_screenheight()
+    UI_SCALE = max(0.6, min(1.0, screen_w / 3840))
+
+    root.tk.call("tk", "scaling", max(1.05, BASE_TK_SCALING * UI_SCALE))
+
+    win_w = min(sx(2000), int(screen_w * 0.92))
+    win_h = min(sx(1200), int(screen_h * 0.88))
+    root.geometry(f"{win_w}x{win_h}+{(screen_w-win_w)//2}+{(screen_h-win_h)//2}")
+    root.minsize(sx(1000), sx(700))
 
 def button_style(bg=PRIMARY, fg=BUTTON_TEXT):
     return {
@@ -76,6 +104,24 @@ def large_checkbutton(parent, variable, bg=PANEL_BG):
         cursor="hand2"
     )
 
+def layer_bar(parent, layers, bg=CARD_BG):
+    values = (list(layers) + [0] * 7)[:7]
+    canvas_w = sx(116)
+    canvas_h = sx(34)
+    bar_w = sx(9)
+    gap = sx(6)
+    top = sx(4)
+    bottom = canvas_h - sx(4)
+    total_w = 7 * bar_w + 6 * gap
+    x = max(sx(4), (canvas_w - total_w) // 2)
+    canvas = tk.Canvas(parent, width=canvas_w, height=canvas_h, bg=bg, highlightthickness=0)
+    for active in values:
+        fill = PRIMARY if active else "#DDD1C5"
+        outline = SELECTED if active else BORDER_COLOR
+        canvas.create_rectangle(x, top, x + bar_w, bottom, fill=fill, outline=outline, width=1)
+        x += bar_w + gap
+    return canvas
+
 def rgb_to_hex(rgb):
     """将 RGB 数组转换为 #RRGGBB 格式。"""
     r, g, b = [int(c) for c in rgb[:3]]
@@ -96,7 +142,7 @@ def nearest_palette_indices(pixels, palette, chunk_size=500000):
     return idx
 
 def init_db():
-    """初始化 JSON 数据库，确保程序启动时数据路径有效[cite: 3]"""
+    """初始化 JSON 数据库，确保程序启动时数据路径有效。"""
     if not os.path.exists(DB_FILE):
         with open(DB_FILE, 'w', encoding='utf-8') as f:
             json.dump([], f)
@@ -130,65 +176,68 @@ class RecipeRecorderTab(tk.Frame):
         self.scale_factor = 1.0     # 预览缩放比例，用于点击坐标还原到原图坐标
         self.temp_rgb = [128, 128, 128] # 当前选中的 RGB 颜色
         self.phys_layers = ["TS", "TM", "TL", "FR4", "BL", "BM", "BS"] # 7大物理层级
+        self.preview_resize_job = None
+        self.toolbar_wrapped = False
+        self.toolbar_layout_job = None
         self.setup_ui()
         self.refresh_list()
 
     def setup_ui(self):
         """构建录入界面的 UI 布局"""
         # --- 顶部工具栏 ---
-        top_bar = tk.Frame(self, pady=10, bg=BAR_BG)
+        top_bar = tk.Frame(self, bg=BAR_BG)
         top_bar.pack(side=tk.TOP, fill=tk.X)
-        tk.Button(top_bar, text="载入照片", command=self.load_image, font=FONT_UI_BOLD, padx=16, pady=7, **button_style(PRIMARY)).pack(side=tk.LEFT, padx=15)
+        self.toolbar_line1 = tk.Frame(top_bar, pady=sx(10), bg=BAR_BG)
+        self.toolbar_line2 = tk.Frame(top_bar, pady=sp((0, 10))[1], bg=BAR_BG)
+        self.toolbar_line1.pack(side=tk.TOP, fill=tk.X)
+        self.capture_group = tk.Frame(top_bar, bg=BAR_BG)
+        self.layer_group = tk.Frame(top_bar, padx=sx(8), pady=sx(3), bg=BAR_BG, highlightbackground=BORDER_COLOR, highlightthickness=1)
+        self.save_group = tk.Frame(top_bar, bg=BAR_BG)
+        self.capture_group.pack(in_=self.toolbar_line1, side=tk.LEFT)
+        self.layer_group.pack(in_=self.toolbar_line1, side=tk.LEFT, padx=sp((0, 12)))
+        self.save_group.pack(in_=self.toolbar_line1, side=tk.LEFT)
+
+        tk.Button(self.capture_group, text="载入照片", command=self.load_image, font=FONT_UI_BOLD, padx=sx(16), pady=sx(7), **button_style(PRIMARY)).pack(side=tk.LEFT, padx=sx(15))
+
+        self.mask_var = tk.StringVar(value="蓝色"); self.mode_var = tk.StringVar(value="无背光")
+        filter_group = tk.Frame(self.capture_group, bg=BAR_BG)
+        filter_group.pack(side=tk.LEFT, padx=sp((0, 8)))
+        self.m_cb = ttk.Combobox(filter_group, textvariable=self.mask_var, values=["蓝色", "绿色", "黄色", "红色", "紫色", "白色", "黑色"], state="readonly", width=9, font=FONT_UI)
+        self.m_cb.pack(side=tk.LEFT, padx=sx(5))
+        self.m_cb.bind("<<ComboboxSelected>>", lambda e: self.refresh_list())
+        self.mode_cb = ttk.Combobox(filter_group, textvariable=self.mode_var, values=["无背光", "有背光"], state="readonly", width=9, font=FONT_UI)
+        self.mode_cb.pack(side=tk.LEFT, padx=sx(5))
+        self.mode_cb.bind("<<ComboboxSelected>>", lambda e: self.refresh_list())
+
+        self.cur_color_lab = tk.Label(self.capture_group, text="点击取色/色盘", bg=SURFACE_BG, fg=MUTED_TEXT, relief=tk.SOLID, bd=1, padx=sx(14), pady=sx(8), font=FONT_UI_BOLD, cursor="hand2")
+        self.cur_color_lab.pack(side=tk.LEFT, padx=sp((4, 12)))
+        self.cur_color_lab.bind("<Button-1>", self.pick_color_from_palette)
+
+        self.layer_vars = []
+        for i, name in enumerate(self.phys_layers):
+            unit = tk.Frame(self.layer_group, bg=BAR_BG)
+            unit.pack(side=tk.LEFT, padx=sx(4))
+            var = tk.IntVar(); self.layer_vars.append(var)
+            if i == 3: var.set(1) # 默认勾选 FR4 基板层
+            large_checkbutton(unit, var, bg=BAR_BG).pack(side=tk.TOP, pady=sp((0, 2)))
+            tk.Label(unit, text=name, font=FONT_MONO_BOLD, fg=TEXT_COLOR, bg=BAR_BG).pack(side=tk.TOP)
+
+        tk.Button(self.save_group, text="录入当前色块配方", command=self.save_recipe, font=FONT_UI_BOLD, padx=sx(14), pady=sx(7), **button_style(SECONDARY)).pack(side=tk.LEFT, padx=sx(8))
+        top_bar.bind("<Configure>", self._schedule_toolbar_layout)
+        self.after_idle(self._layout_toolbar)
 
         # --- 主显示区 (左右分栏) ---
         main_content = tk.Frame(self, bg=APP_BG)
         main_content.pack(fill=tk.BOTH, expand=True)
 
         # 左侧控制面板 (固定 560px 宽度，给 HEX 信息留出横向空间)
-        self.side_panel = tk.Frame(main_content, padx=20, pady=15, width=560, bg=PANEL_BG)
+        self.side_panel = tk.Frame(main_content, padx=sx(20), pady=sx(15), width=sx(560), bg=PANEL_BG)
         self.side_panel.pack(side=tk.LEFT, fill=tk.Y)
         self.side_panel.pack_propagate(False)
 
-        # 1. 配方录入区
-        setup_frame = tk.LabelFrame(self.side_panel, text=" 配方录入区 ", padx=15, pady=16, font=FONT_SECTION, bg=PANEL_BG, fg=TEXT_COLOR, highlightbackground=BORDER_COLOR)
-        setup_frame.pack(side=tk.TOP, fill=tk.X, pady=5)
-
-        # 下拉框容器：使用 grid 实现平分对齐
-        header_f = tk.Frame(setup_frame, bg=PANEL_BG)
-        header_f.pack(fill=tk.X)
-        header_f.columnconfigure(0, weight=1); header_f.columnconfigure(1, weight=1)
-
-        self.mask_var = tk.StringVar(value="蓝色"); self.mode_var = tk.StringVar(value="无背光")
-        
-        self.m_cb = ttk.Combobox(header_f, textvariable=self.mask_var, values=["蓝色", "绿色", "黄色", "红色", "紫色", "白色", "黑色"], state="readonly", font=FONT_UI)
-        self.m_cb.grid(row=0, column=0, sticky="ew", padx=(0, 5))
-        self.m_cb.bind("<<ComboboxSelected>>", lambda e: self.refresh_list())
-        
-        self.mode_cb = ttk.Combobox(header_f, textvariable=self.mode_var, values=["无背光", "有背光"], state="readonly", font=FONT_UI)
-        self.mode_cb.grid(row=0, column=1, sticky="ew", padx=(5, 0))
-        self.mode_cb.bind("<<ComboboxSelected>>", lambda e: self.refresh_list())
-
-        # 选中色显示/调色盘入口
-        self.cur_color_lab = tk.Label(setup_frame, text="点击打开色盘/取色", bg=SURFACE_BG, fg=MUTED_TEXT, relief=tk.SOLID, bd=1, pady=14, font=FONT_UI_BOLD, cursor="hand2")
-        self.cur_color_lab.pack(fill=tk.X, pady=16)
-        self.cur_color_lab.bind("<Button-1>", self.pick_color_from_palette)
-
-        # 物理层级勾选框 (TS 到 BS)
-        cb_container = tk.Frame(setup_frame, bg=PANEL_BG)
-        cb_container.pack(fill=tk.X, pady=10)
-        self.layer_vars = []
-        for i, name in enumerate(self.phys_layers):
-            unit = tk.Frame(cb_container, bg=PANEL_BG); unit.pack(side=tk.LEFT, expand=True)
-            var = tk.IntVar(); self.layer_vars.append(var)
-            if i == 3: var.set(1) # 默认勾选 FR4 基板层
-            large_checkbutton(unit, var).pack(side=tk.TOP, pady=(0, 4))
-            tk.Label(unit, text=name, font=FONT_MONO_LARGE, fg=TEXT_COLOR, bg=PANEL_BG).pack(side=tk.TOP)
-
-        tk.Button(setup_frame, text="录入当前色块配方", command=self.save_recipe, font=FONT_UI_BOLD, pady=10, **button_style(SECONDARY)).pack(fill=tk.X, pady=(16, 8))
-
-        # 2. 本地数据库展示区 (带 Canvas 宽度同步逻辑)
-        list_frame = tk.LabelFrame(self.side_panel, text=" 本地数据库 (分类筛选) ", padx=10, pady=10, font=FONT_SECTION, bg=PANEL_BG, fg=TEXT_COLOR, highlightbackground=BORDER_COLOR)
-        list_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True, pady=5)
+        # 本地数据库展示区 (带 Canvas 宽度同步逻辑)
+        list_frame = tk.LabelFrame(self.side_panel, text=" 本地数据库 (分类筛选) ", padx=sx(10), pady=sx(10), font=FONT_SECTION, bg=PANEL_BG, fg=TEXT_COLOR, highlightbackground=BORDER_COLOR)
+        list_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True, pady=sx(5))
         
         self.list_canvas = tk.Canvas(list_frame, highlightthickness=0, bg=SURFACE_BG)
         self.scroll_y = tk.Scrollbar(list_frame, orient="vertical", command=self.list_canvas.yview)
@@ -208,8 +257,9 @@ class RecipeRecorderTab(tk.Frame):
 
         # 右侧照片预览
         self.preview_label = tk.Label(main_content, text="照片预览区", bg=PREVIEW_BG, fg=MUTED_TEXT, bd=1, relief=tk.SOLID, font=FONT_PREVIEW)
-        self.preview_label.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=22, pady=22)
+        self.preview_label.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=sx(22), pady=sx(22))
         self.preview_label.bind("<Button-1>", self.on_click_eye_dropper)
+        self.preview_label.bind("<Configure>", self._schedule_preview_resize)
 
     def _on_canvas_configure(self, event):
         """强制内部列表框架宽度等于 Canvas 宽度，解决缩放导致的宽度塌陷"""
@@ -223,6 +273,40 @@ class RecipeRecorderTab(tk.Frame):
 
     def _on_list_mousewheel(self, event):
         self.list_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+    def _schedule_toolbar_layout(self, event=None):
+        if self.toolbar_layout_job:
+            self.after_cancel(self.toolbar_layout_job)
+        self.toolbar_layout_job = self.after(80, self._layout_toolbar)
+
+    def _layout_toolbar(self):
+        self.toolbar_layout_job = None
+        self.update_idletasks()
+        available = self.toolbar_line1.winfo_width()
+        root_width = self.winfo_toplevel().winfo_width()
+        if root_width > 1:
+            available = min(available if available > 1 else root_width, max(1, root_width - sx(36)))
+        needed = (
+            self.capture_group.winfo_reqwidth()
+            + self.layer_group.winfo_reqwidth()
+            + self.save_group.winfo_reqwidth()
+            + sx(24)
+        )
+        should_wrap = available > 1 and needed > available
+        if should_wrap == self.toolbar_wrapped:
+            return
+
+        self.layer_group.pack_forget()
+        self.save_group.pack_forget()
+        self.toolbar_line2.pack_forget()
+        if should_wrap:
+            self.toolbar_line2.pack(side=tk.TOP, fill=tk.X)
+            self.layer_group.pack(in_=self.toolbar_line2, side=tk.LEFT, padx=sp((15, 12)))
+            self.save_group.pack(in_=self.toolbar_line2, side=tk.LEFT)
+        else:
+            self.layer_group.pack(in_=self.toolbar_line1, side=tk.LEFT, padx=sp((0, 12)))
+            self.save_group.pack(in_=self.toolbar_line1, side=tk.LEFT)
+        self.toolbar_wrapped = should_wrap
 
     def pick_color_from_palette(self, event):
         """弹出系统调色盘"""
@@ -249,6 +333,18 @@ class RecipeRecorderTab(tk.Frame):
         tk_img = ImageTk.PhotoImage(res)
         self.preview_label.config(image=tk_img, text=""); self.preview_label.image = tk_img
 
+    def _schedule_preview_resize(self, event=None):
+        if self.ref_img is None:
+            return
+        if self.preview_resize_job:
+            self.after_cancel(self.preview_resize_job)
+        self.preview_resize_job = self.after(120, self._refresh_preview_after_resize)
+
+    def _refresh_preview_after_resize(self):
+        self.preview_resize_job = None
+        if self.ref_img is not None:
+            self.show_preview(self.ref_img)
+
     def on_click_eye_dropper(self, event):
         """吸管工具：根据缩放比例计算并在原图上采样 RGB"""
         if self.ref_img is None: return
@@ -269,6 +365,14 @@ class RecipeRecorderTab(tk.Frame):
             "layer_str": ",".join([self.phys_layers[i] for i, v in enumerate(self.layer_vars) if v.get()])
         }
         data = load_recipes()
+        if any(
+            r.get("mask") == recipe["mask"]
+            and r.get("mode") == recipe["mode"]
+            and list(r.get("layers", [])) == recipe["layers"]
+            for r in data
+        ):
+            messagebox.showinfo("已存在", "当前分类下已经有相同层组合的色卡。")
+            return
         data.append(recipe)
         save_recipes(data)
         self.refresh_list()
@@ -279,13 +383,13 @@ class RecipeRecorderTab(tk.Frame):
         all_data = load_recipes()
         filtered = [r for r in all_data if r["mask"] == self.mask_var.get() and r["mode"] == self.mode_var.get()]
         for r in filtered:
-            f = tk.Frame(self.scroll_inner, bg=CARD_BG, pady=7, bd=1, relief=tk.SOLID, highlightbackground=BORDER_COLOR)
-            f.pack(fill=tk.X, pady=3, padx=6)
+            f = tk.Frame(self.scroll_inner, bg=CARD_BG, pady=sx(7), bd=1, relief=tk.SOLID, highlightbackground=BORDER_COLOR)
+            f.pack(fill=tk.X, pady=sx(3), padx=sx(6))
             hex_color = rgb_to_hex(r["rgb"])
-            tk.Label(f, bg=hex_color, width=5, height=2).pack(side=tk.LEFT, padx=(12, 8))
+            tk.Label(f, bg=hex_color, width=5, height=2).pack(side=tk.LEFT, padx=sp((12, 8)))
             tk.Label(f, text=hex_color, font=FONT_MONO_BOLD, bg=CARD_BG, fg=TEXT_COLOR, width=9, anchor="w").pack(side=tk.LEFT)
-            tk.Label(f, text=f"{r['layer_str']}", font=FONT_UI, bg=CARD_BG, fg=TEXT_COLOR, anchor="w").pack(side=tk.LEFT, fill=tk.X, expand=True)
-            tk.Button(f, text="×", command=lambda item=r: self.delete_entry(item), font=FONT_UI_BOLD, fg=DANGER, bg=CARD_BG, activeforeground=DANGER, activebackground=CARD_BG, bd=0, cursor="hand2").pack(side=tk.RIGHT, padx=14)
+            layer_bar(f, r.get("layers", []), bg=CARD_BG).pack(side=tk.LEFT, padx=sp((4, 8)))
+            tk.Button(f, text="×", command=lambda item=r: self.delete_entry(item), font=FONT_UI_BOLD, fg=DANGER, bg=CARD_BG, activeforeground=DANGER, activebackground=CARD_BG, bd=0, cursor="hand2").pack(side=tk.RIGHT, padx=sx(14))
         self.list_canvas.config(scrollregion=self.list_canvas.bbox("all"))
 
     def delete_entry(self, item):
@@ -309,7 +413,11 @@ class ColorMapperTab(tk.Frame):
         self.available_recipes = []
         self.mapping = {}
         self.original_img = None
+        self.preview_img = None
         self.active_recipe_idx = None
+        self.toolbar_wrapped = False
+        self.toolbar_layout_job = None
+        self.preview_resize_job = None
         
         # v3.3 标定控制变量[cite: 3]
         self.mark_tl = tk.IntVar(value=0)
@@ -323,23 +431,32 @@ class ColorMapperTab(tk.Frame):
 
     def setup_ui(self):
         """构建映射界面的 UI 布局"""
-        top_bar = tk.Frame(self, pady=10, bg=BAR_BG)
+        top_bar = tk.Frame(self, bg=BAR_BG)
         top_bar.pack(side=tk.TOP, fill=tk.X)
+        self.toolbar_line1 = tk.Frame(top_bar, pady=sx(10), bg=BAR_BG)
+        self.toolbar_line2 = tk.Frame(top_bar, pady=sp((0, 10))[1], bg=BAR_BG)
+        self.toolbar_line1.pack(side=tk.TOP, fill=tk.X)
+        self.filter_group = tk.Frame(top_bar, bg=BAR_BG)
+        self.action_group = tk.Frame(top_bar, bg=BAR_BG)
+        self.settings_group = tk.Frame(top_bar, bg=BAR_BG)
+        self.filter_group.pack(in_=self.toolbar_line1, side=tk.LEFT)
+        self.action_group.pack(in_=self.toolbar_line1, side=tk.LEFT)
+        self.settings_group.pack(in_=self.toolbar_line1, side=tk.LEFT)
         self.mask_var = tk.StringVar(value="蓝色"); self.mode_var = tk.StringVar(value="无背光")
         
-        ttk.Combobox(top_bar, textvariable=self.mask_var, values=["蓝色", "绿色", "黄色", "红色", "紫色", "白色", "黑色"], state="readonly", width=10, font=FONT_UI).pack(side=tk.LEFT, padx=10)
-        ttk.Combobox(top_bar, textvariable=self.mode_var, values=["无背光", "有背光"], state="readonly", width=10, font=FONT_UI).pack(side=tk.LEFT, padx=5)
+        ttk.Combobox(self.filter_group, textvariable=self.mask_var, values=["蓝色", "绿色", "黄色", "红色", "紫色", "白色", "黑色"], state="readonly", width=10, font=FONT_UI).pack(side=tk.LEFT, padx=sx(10))
+        ttk.Combobox(self.filter_group, textvariable=self.mode_var, values=["无背光", "有背光"], state="readonly", width=10, font=FONT_UI).pack(side=tk.LEFT, padx=sx(5))
         
-        tk.Button(top_bar, text="提取色卡", command=self.fetch_recipes, font=FONT_UI_BOLD, padx=14, pady=7, **button_style(PRIMARY)).pack(side=tk.LEFT, padx=8)
-        tk.Button(top_bar, text="载入图片", command=self.load_image, font=FONT_UI_BOLD, padx=14, pady=7, **button_style(SECONDARY)).pack(side=tk.LEFT, padx=8)
-        tk.Button(top_bar, text="效果预览", command=self.process_alchemy, font=FONT_UI_BOLD, padx=14, pady=7, **button_style(ACCENT)).pack(side=tk.LEFT, padx=8)
-        tk.Button(top_bar, text="导出图纸", command=self.export_layers, font=FONT_UI_BOLD, padx=14, pady=7, **button_style(SUCCESS)).pack(side=tk.LEFT, padx=8)
+        tk.Button(self.action_group, text="提取色卡", command=self.fetch_recipes, font=FONT_UI_BOLD, padx=sx(14), pady=sx(7), **button_style(PRIMARY)).pack(side=tk.LEFT, padx=sx(8))
+        tk.Button(self.action_group, text="载入图片", command=self.load_image, font=FONT_UI_BOLD, padx=sx(14), pady=sx(7), **button_style(SECONDARY)).pack(side=tk.LEFT, padx=sx(8))
+        tk.Button(self.action_group, text="效果预览", command=self.process_alchemy, font=FONT_UI_BOLD, padx=sx(14), pady=sx(7), **button_style(ACCENT)).pack(side=tk.LEFT, padx=sx(8))
+        tk.Button(self.action_group, text="导出图纸", command=self.export_layers, font=FONT_UI_BOLD, padx=sx(14), pady=sx(7), **button_style(SUCCESS)).pack(side=tk.LEFT, padx=sx(8))
 
         # 原点标定设置移到顶部菜单，避免被长色卡列表挤到侧栏底部。
-        self.cal_frame = tk.Frame(top_bar, padx=10, pady=4, bg=BAR_BG, highlightbackground=BORDER_COLOR, highlightthickness=1)
-        self.cal_frame.pack(side=tk.LEFT, padx=(8, 10), pady=0)
+        self.cal_frame = tk.Frame(self.settings_group, padx=sx(10), pady=sx(4), bg=BAR_BG, highlightbackground=BORDER_COLOR, highlightthickness=1)
+        self.cal_frame.pack(side=tk.LEFT, padx=sp((8, 10)), pady=0)
 
-        tk.Label(self.cal_frame, text="原点标定设置", bg=BAR_BG, fg=TEXT_COLOR, font=FONT_UI_BOLD).pack(side=tk.LEFT, padx=(0, 12))
+        tk.Label(self.cal_frame, text="原点标定设置", bg=BAR_BG, fg=TEXT_COLOR, font=FONT_UI_BOLD).pack(side=tk.LEFT, padx=sp((0, 12)))
 
         mark_grid = tk.Frame(self.cal_frame, bg=BAR_BG)
         mark_grid.pack(side=tk.LEFT)
@@ -348,25 +465,27 @@ class ColorMapperTab(tk.Frame):
         for i, (name, var) in enumerate(corners):
             mark_grid.columnconfigure(i, weight=1)
             unit = tk.Frame(mark_grid, bg=BAR_BG)
-            unit.grid(row=0, column=i, sticky="ew", padx=5)
-            large_checkbutton(unit, var, bg=BAR_BG).pack(side=tk.TOP, pady=(0, 3))
+            unit.grid(row=0, column=i, sticky="ew", padx=sx(5))
+            large_checkbutton(unit, var, bg=BAR_BG).pack(side=tk.TOP, pady=sp((0, 3)))
             tk.Label(unit, text=name, bg=BAR_BG, fg=TEXT_COLOR, font=FONT_UI).pack(side=tk.TOP)
 
         size_frame = tk.Frame(self.cal_frame, bg=BAR_BG)
-        size_frame.pack(side=tk.LEFT, padx=(14, 0))
+        size_frame.pack(side=tk.LEFT, padx=sp((14, 0)))
         tk.Label(size_frame, text="标定边长(px)", bg=BAR_BG, fg=TEXT_COLOR, font=FONT_UI).pack(side=tk.TOP)
-        tk.Entry(size_frame, textvariable=self.mark_size_var, font=FONT_MONO_LARGE, width=6, justify=tk.CENTER).pack(side=tk.TOP, pady=(2, 0))
+        tk.Entry(size_frame, textvariable=self.mark_size_var, font=FONT_MONO_LARGE, width=6, justify=tk.CENTER).pack(side=tk.TOP, pady=sp((2, 0)))
 
-        denoise_frame = tk.Frame(top_bar, padx=10, pady=4, bg=BAR_BG, highlightbackground=BORDER_COLOR, highlightthickness=1)
-        denoise_frame.pack(side=tk.LEFT, padx=(0, 10), pady=0)
-        tk.Label(denoise_frame, text="导出降噪设置", bg=BAR_BG, fg=TEXT_COLOR, font=FONT_UI_BOLD).pack(side=tk.LEFT, padx=(0, 10))
+        denoise_frame = tk.Frame(self.settings_group, padx=sx(10), pady=sx(4), bg=BAR_BG, highlightbackground=BORDER_COLOR, highlightthickness=1)
+        denoise_frame.pack(side=tk.LEFT, padx=sp((0, 10)), pady=0)
+        tk.Label(denoise_frame, text="导出降噪设置", bg=BAR_BG, fg=TEXT_COLOR, font=FONT_UI_BOLD).pack(side=tk.LEFT, padx=sp((0, 10)))
         large_checkbutton(denoise_frame, self.denoise_var, bg=BAR_BG).pack(side=tk.LEFT)
+        top_bar.bind("<Configure>", self._schedule_toolbar_layout)
+        self.after_idle(self._layout_toolbar)
 
         main = tk.Frame(self, bg=APP_BG)
         main.pack(fill=tk.BOTH, expand=True)
 
         # 带有滚动功能的侧边面板
-        self.side_outer = tk.Frame(main, width=560, bg=PANEL_BG)
+        self.side_outer = tk.Frame(main, width=sx(560), bg=PANEL_BG)
         self.side_outer.pack(side=tk.LEFT, fill=tk.Y)
         self.side_outer.pack_propagate(False)
         
@@ -383,8 +502,8 @@ class ColorMapperTab(tk.Frame):
         self.side_inner.bind("<Leave>", self._unbind_mapping_mousewheel)
 
         # 映射配对区
-        self.map_frame = tk.LabelFrame(self.side_inner, text=" 色彩映射区 ", padx=15, pady=16, font=FONT_SECTION, bg=PANEL_BG, fg=TEXT_COLOR, highlightbackground=BORDER_COLOR)
-        self.map_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=10)
+        self.map_frame = tk.LabelFrame(self.side_inner, text=" 色彩映射区 ", padx=sx(15), pady=sx(16), font=FONT_SECTION, bg=PANEL_BG, fg=TEXT_COLOR, highlightbackground=BORDER_COLOR)
+        self.map_frame.pack(side=tk.TOP, fill=tk.X, padx=sx(10), pady=sx(10))
         self.list_frame = tk.Frame(self.map_frame, bg=PANEL_BG)
         self.list_frame.pack(fill=tk.BOTH, expand=True)
         self.list_frame.bind("<Enter>", self._bind_mapping_mousewheel)
@@ -396,8 +515,43 @@ class ColorMapperTab(tk.Frame):
         self.left_label = tk.Label(preview_frame, text="原图预览", bg=PREVIEW_BG, fg=MUTED_TEXT, bd=1, relief=tk.SOLID, font=FONT_PREVIEW)
         self.left_label.place(relx=0.01, rely=0.02, relwidth=0.48, relheight=0.96)
         self.left_label.bind("<Button-1>", self.on_src_click)
+        self.left_label.bind("<Configure>", self._schedule_preview_resize)
         self.right_label = tk.Label(preview_frame, text="效果预览", bg=PREVIEW_BG, fg=MUTED_TEXT, bd=1, relief=tk.SOLID, font=FONT_PREVIEW)
         self.right_label.place(relx=0.51, rely=0.02, relwidth=0.48, relheight=0.96)
+        self.right_label.bind("<Configure>", self._schedule_preview_resize)
+
+    def _schedule_toolbar_layout(self, event=None):
+        if self.toolbar_layout_job:
+            self.after_cancel(self.toolbar_layout_job)
+        self.toolbar_layout_job = self.after(80, self._layout_toolbar)
+
+    def _layout_toolbar(self):
+        self.toolbar_layout_job = None
+        self.update_idletasks()
+        available = self.toolbar_line1.winfo_width()
+        root_width = self.winfo_toplevel().winfo_width()
+        if root_width > 1:
+            available = min(available if available > 1 else root_width, max(1, root_width - sx(36)))
+        needed = (
+            self.filter_group.winfo_reqwidth()
+            + self.action_group.winfo_reqwidth()
+            + self.settings_group.winfo_reqwidth()
+            + sx(24)
+        )
+        should_wrap = available > 1 and needed > available
+        if should_wrap == self.toolbar_wrapped:
+            return
+
+        self.action_group.pack_forget()
+        self.settings_group.pack_forget()
+        self.toolbar_line2.pack_forget()
+        self.action_group.pack(in_=self.toolbar_line1, side=tk.LEFT)
+        if should_wrap:
+            self.toolbar_line2.pack(side=tk.TOP, fill=tk.X)
+            self.settings_group.pack(in_=self.toolbar_line2, side=tk.LEFT)
+        else:
+            self.settings_group.pack(in_=self.toolbar_line1, side=tk.LEFT)
+        self.toolbar_wrapped = should_wrap
 
     def _bind_mapping_mousewheel(self, event):
         self.side_canvas.bind_all("<MouseWheel>", self._on_mapping_mousewheel)
@@ -423,15 +577,15 @@ class ColorMapperTab(tk.Frame):
         scroll_pos = self.side_canvas.yview()[0] if preserve_scroll else 0
         for w in self.list_frame.winfo_children(): w.destroy()
         for i, r in enumerate(self.available_recipes):
-            f = tk.Frame(self.list_frame, pady=7, bd=1, relief=tk.SOLID, bg=CARD_BG, highlightbackground=BORDER_COLOR)
-            f.pack(fill=tk.X, pady=3, padx=2)
+            f = tk.Frame(self.list_frame, pady=sx(7), bd=1, relief=tk.SOLID, bg=CARD_BG, highlightbackground=BORDER_COLOR)
+            f.pack(fill=tk.X, pady=sx(3), padx=sx(2))
             recipe_hex = rgb_to_hex(r["rgb"])
             mapped_rgb = self.mapping[i]
             mapped_hex = rgb_to_hex(mapped_rgb) if mapped_rgb else "未映射"
 
-            tk.Label(f, bg=recipe_hex, width=5, height=2).pack(side=tk.LEFT, padx=(12, 8))
+            tk.Label(f, bg=recipe_hex, width=5, height=2).pack(side=tk.LEFT, padx=sp((12, 8)))
             tk.Label(f, text=recipe_hex, font=FONT_MONO_BOLD, bg=CARD_BG, fg=TEXT_COLOR, width=9, anchor="w").pack(side=tk.LEFT)
-            tk.Button(f, text="映射", font=FONT_SMALL_BOLD, padx=10, pady=4, command=lambda idx=i: self.set_active(idx), **button_style(PRIMARY)).pack(side=tk.LEFT, padx=8)
+            tk.Button(f, text="映射", font=FONT_SMALL_BOLD, padx=sx(10), pady=sx(4), command=lambda idx=i: self.set_active(idx), **button_style(PRIMARY)).pack(side=tk.LEFT, padx=sx(8))
             tk.Button(
                 f,
                 text="取消",
@@ -445,17 +599,17 @@ class ColorMapperTab(tk.Frame):
                 relief=tk.FLAT,
                 bd=0,
                 cursor="hand2"
-            ).pack(side=tk.RIGHT, padx=(4, 12))
-            tk.Label(f, text=mapped_hex, font=FONT_MONO_BOLD, bg=CARD_BG, fg=TEXT_COLOR, width=9, anchor="w").pack(side=tk.RIGHT, padx=(4, 6))
+            ).pack(side=tk.RIGHT, padx=sp((4, 12)))
+            tk.Label(f, text=mapped_hex, font=FONT_MONO_BOLD, bg=CARD_BG, fg=TEXT_COLOR, width=9, anchor="w").pack(side=tk.RIGHT, padx=sp((4, 6)))
             if mapped_rgb:
-                tk.Label(f, bg=rgb_to_hex(mapped_rgb), width=5, height=2).pack(side=tk.RIGHT, padx=(4, 0))
+                tk.Label(f, bg=rgb_to_hex(mapped_rgb), width=5, height=2).pack(side=tk.RIGHT, padx=sp((4, 0)))
         self.side_canvas.configure(scrollregion=self.side_canvas.bbox("all"))
         self.side_canvas.yview_moveto(scroll_pos)
 
     def set_active(self, idx):
         """激活取色状态"""
         self.active_recipe_idx = idx
-        self.left_label.config(highlightbackground=SELECTED, highlightthickness=4)
+        self.left_label.config(highlightbackground=SELECTED, highlightthickness=sx(4))
 
     def clear_mapping(self, idx):
         """取消指定色卡的原图颜色映射。"""
@@ -482,7 +636,10 @@ class ColorMapperTab(tk.Frame):
         p = filedialog.askopenfilename()
         if p:
             self.original_img = Image.open(p).convert("RGB")
+            self.preview_img = None
             self.mark_size_var.set(str(max(1, int(self.original_img.size[0] / 100)))) 
+            self.right_label.config(image="", text="效果预览")
+            self.right_label.image = None
             self.show_view(self.original_img, self.left_label)
 
     def show_view(self, img, label):
@@ -491,8 +648,22 @@ class ColorMapperTab(tk.Frame):
         if w < 10 or h < 10:
             w, h = 800, 600
         scale = min(w/img.size[0], h/img.size[1])
-        tk_img = ImageTk.PhotoImage(img.resize((int(img.size[0]*scale), int(img.size[1]*scale))))
+        tk_img = ImageTk.PhotoImage(img.resize((int(img.size[0]*scale), int(img.size[1]*scale)), Image.Resampling.LANCZOS))
         label.config(image=tk_img, text=""); label.image = tk_img
+
+    def _schedule_preview_resize(self, event=None):
+        if self.original_img is None and self.preview_img is None:
+            return
+        if self.preview_resize_job:
+            self.after_cancel(self.preview_resize_job)
+        self.preview_resize_job = self.after(120, self._refresh_previews_after_resize)
+
+    def _refresh_previews_after_resize(self):
+        self.preview_resize_job = None
+        if self.original_img is not None:
+            self.show_view(self.original_img, self.left_label)
+        if self.preview_img is not None:
+            self.show_view(self.preview_img, self.right_label)
 
     def process_alchemy(self):
         """色彩聚集核心算法：基于欧几里德距离的最近邻重采样"""
@@ -504,7 +675,8 @@ class ColorMapperTab(tk.Frame):
         dst_pal = np.array([p[1] for p in pairs], dtype=np.uint8)
         idx = nearest_palette_indices(pixels, src_pal)
         res = dst_pal[idx].reshape(data.shape).astype(np.uint8)
-        self.show_view(Image.fromarray(res), self.right_label)
+        self.preview_img = Image.fromarray(res)
+        self.show_view(self.preview_img, self.right_label)
 
     def export_layers(self):
         """
@@ -568,11 +740,8 @@ class PCBMasterApp:
         self.root.title(f"PCB 艺术助手 v{APP_VERSION}")
         self.root.configure(bg=APP_BG)
         
-        # 0.6x 屏幕比例的窗口初始化逻辑[cite: 3]
-        sw = self.root.winfo_screenwidth(); sh = self.root.winfo_screenheight()
-        ww, wh = int(sw * 0.6), int(sh * 0.6)
-        self.root.geometry(f"{ww}x{wh}+{(sw-ww)//2}+{(sh-wh)//2}")
-        self.root.minsize(1024, 768)
+        # 屏幕适配：统一窗口、控件间距和 Tk 字体缩放。
+        configure_screen_scaling(self.root)
         
         # 全局样式深度配置 (CSS 风格封装)
         style = ttk.Style(); style.theme_use("clam")
@@ -580,7 +749,7 @@ class PCBMasterApp:
         # 下拉框高度同步修正：通过内边距 padding 强制撑起外框[cite: 3]
         style.configure(
             "TCombobox",
-            padding=9,
+            padding=sx(9),
             font=FONT_UI,
             fieldbackground=SURFACE_BG,
             background=SURFACE_BG,
@@ -599,11 +768,12 @@ class PCBMasterApp:
         
         # 标签页 Tab 样式锁定：禁止选中时的形变
         style.configure("TNotebook", background=APP_BG, borderwidth=0)
-        style.configure("TNotebook.Tab", padding=[52, 18], font=FONT_TAB, background=BAR_BG, foreground=TEXT_COLOR, bordercolor=BORDER_COLOR)
-        style.map("TNotebook.Tab", background=[("selected", SELECTED)], foreground=[("selected", BUTTON_TEXT)], padding=[("selected", [52, 18])], expand=[("selected", [0, 0, 0, 0])]) 
+        tab_padding = [sx(52), sx(18)]
+        style.configure("TNotebook.Tab", padding=tab_padding, font=FONT_TAB, background=BAR_BG, foreground=TEXT_COLOR, bordercolor=BORDER_COLOR)
+        style.map("TNotebook.Tab", background=[("selected", SELECTED)], foreground=[("selected", BUTTON_TEXT)], padding=[("selected", tab_padding)], expand=[("selected", [0, 0, 0, 0])]) 
 
         self.notebook = ttk.Notebook(self.root)
-        self.notebook.pack(fill=tk.BOTH, expand=True, padx=12, pady=12)
+        self.notebook.pack(fill=tk.BOTH, expand=True, padx=sx(12), pady=sx(12))
         
         # 加载核心功能模块
         self.notebook.add(RecipeRecorderTab(self.notebook), text="色卡录入")
@@ -611,7 +781,5 @@ class PCBMasterApp:
 
 if __name__ == "__main__":
     root = tk.Tk()
-    # 全局 UI 缩放因子设置，完美适配 Windows 10/11 的缩放百分比[cite: 3]
-    root.tk.call('tk', 'scaling', 1.75) 
     app = PCBMasterApp(root)
     root.mainloop()
