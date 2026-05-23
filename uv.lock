@@ -102,7 +102,7 @@ wheels = [
 
 [[package]]
 name = "pcb-art-assistant"
-version = "4.0.0"
+version = "4.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "numpy" },

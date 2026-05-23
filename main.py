@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk, colorchooser
+from tkinter import filedialog, messagebox, ttk, colorchooser, font as tkfont
 from PIL import Image, ImageTk, ImageFilter
 import numpy as np
 import os
@@ -18,7 +18,7 @@ except:
     except: pass
 
 # 核心数据库文件，存储 RGB 与物理层 (TS, TM, TL, FR4, BL, BM, BS) 的对应关系
-APP_VERSION = "4.0"
+APP_VERSION = "4.1"
 BASE_DIR = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else os.path.dirname(os.path.abspath(__file__))
 DB_FILE = os.path.join(BASE_DIR, "colors.json")
 
@@ -37,6 +37,7 @@ ACCENT = "#6F7F91"
 SUCCESS = "#6C8B5E"
 DANGER = "#B45C4E"
 SELECTED = "#8D6E63"
+TAB_IDLE = "#E3D4C2"
 BUTTON_TEXT = "#FFF8EF"
 FONT_UI = ("微软雅黑", 12)
 FONT_UI_BOLD = ("微软雅黑", 12, "bold")
@@ -47,7 +48,7 @@ FONT_PREVIEW = ("微软雅黑", 15, "bold")
 FONT_MONO = ("Consolas", 11)
 FONT_MONO_BOLD = ("Consolas", 11, "bold")
 FONT_MONO_LARGE = ("Consolas", 13, "bold")
-FONT_TAB = ("微软雅黑", 16, "bold")
+FONT_TAB = ("微软雅黑", 17, "bold")
 UI_SCALE = 1.0
 BASE_TK_SCALING = 1.75
 
@@ -121,6 +122,150 @@ def layer_bar(parent, layers, bg=CARD_BG):
         canvas.create_rectangle(x, top, x + bar_w, bottom, fill=fill, outline=outline, width=1)
         x += bar_w + gap
     return canvas
+
+def color_swatch(parent, color, bg=CARD_BG, width=34, height=24, outline=BORDER_COLOR):
+    canvas = tk.Canvas(
+        parent,
+        width=sx(width),
+        height=sx(height),
+        bg=bg,
+        bd=0,
+        highlightthickness=0
+    )
+    canvas.create_rectangle(
+        sx(1),
+        sx(1),
+        sx(width) - sx(1),
+        sx(height) - sx(1),
+        fill=color,
+        outline=outline,
+        width=sx(1)
+    )
+    return canvas
+
+def rounded_rect(canvas, x1, y1, x2, y2, radius, **kwargs):
+    points = [
+        x1 + radius, y1,
+        x2 - radius, y1,
+        x2, y1,
+        x2, y1 + radius,
+        x2, y2 - radius,
+        x2, y2,
+        x2 - radius, y2,
+        x1 + radius, y2,
+        x1, y2,
+        x1, y2 - radius,
+        x1, y1 + radius,
+        x1, y1,
+    ]
+    return canvas.create_polygon(points, smooth=True, **kwargs)
+
+class RoundedButton(tk.Canvas):
+    def __init__(self, master, text, command, bg, fg=BUTTON_TEXT, font=FONT_UI_BOLD, padx=14, pady=7, radius=12):
+        self.text = text
+        self.command = command
+        self.fill = bg
+        self.fg = fg
+        self.button_font = font
+        self.radius = sx(radius)
+        measure_font = tkfont.Font(font=font)
+        width = measure_font.measure(text) + sx(padx) * 2
+        height = measure_font.metrics("linespace") + sx(pady) * 2
+        super().__init__(
+            master,
+            width=width,
+            height=height,
+            bg=master.cget("bg"),
+            bd=0,
+            highlightthickness=0,
+            cursor="hand2"
+        )
+        self.button_width = width
+        self.button_height = height
+        self.bind("<Button-1>", self._on_click)
+        self.bind("<Enter>", lambda _event: self._draw(hover=True))
+        self.bind("<Leave>", lambda _event: self._draw(hover=False))
+        self._draw()
+
+    def _on_click(self, _event):
+        if self.command:
+            self.command()
+
+    def _draw(self, hover=False):
+        self.delete("all")
+        inset = sx(1)
+        outline = SELECTED if hover else self.fill
+        rounded_rect(
+            self,
+            inset,
+            inset,
+            self.button_width - inset,
+            self.button_height - inset,
+            self.radius,
+            fill=self.fill,
+            outline=outline,
+            width=sx(1)
+        )
+        self.create_text(
+            self.button_width // 2,
+            self.button_height // 2,
+            text=self.text,
+            fill=self.fg,
+            font=self.button_font
+        )
+
+def rounded_button(parent, text, command, bg=PRIMARY, fg=BUTTON_TEXT, font=FONT_UI_BOLD, padx=14, pady=7, radius=12):
+    return RoundedButton(parent, text, command, bg, fg=fg, font=font, padx=padx, pady=pady, radius=radius)
+
+class ColorCheckBlock(tk.Canvas):
+    def __init__(self, master, text, variable, font=FONT_UI_BOLD, width=132, height=42, radius=13):
+        super().__init__(
+            master,
+            width=sx(width),
+            height=sx(height),
+            bg=master.cget("bg"),
+            bd=0,
+            highlightthickness=0,
+            cursor="hand2"
+        )
+        self.text = text
+        self.variable = variable
+        self.block_font = font
+        self.block_width = sx(width)
+        self.block_height = sx(height)
+        self.radius = sx(radius)
+        self.bind("<Button-1>", self.toggle)
+        self.variable.trace_add("write", lambda *_args: self._draw())
+        self._draw()
+
+    def toggle(self, _event=None):
+        self.variable.set(0 if self.variable.get() else 1)
+
+    def _draw(self):
+        self.delete("all")
+        selected = bool(self.variable.get())
+        fill = SUCCESS if selected else SURFACE_BG
+        outline = SUCCESS if selected else BORDER_COLOR
+        fg = BUTTON_TEXT if selected else TEXT_COLOR
+        inset = sx(1)
+        rounded_rect(
+            self,
+            inset,
+            inset,
+            self.block_width - inset,
+            self.block_height - inset,
+            self.radius,
+            fill=fill,
+            outline=outline,
+            width=sx(1)
+        )
+        self.create_text(
+            self.block_width // 2,
+            self.block_height // 2,
+            text=self.text,
+            fill=fg,
+            font=self.block_font
+        )
 
 def rgb_to_hex(rgb):
     """将 RGB 数组转换为 #RRGGBB 格式。"""
@@ -197,9 +342,9 @@ class RecipeRecorderTab(tk.Frame):
         self.layer_group.pack(in_=self.toolbar_line1, side=tk.LEFT, padx=sp((0, 12)))
         self.save_group.pack(in_=self.toolbar_line1, side=tk.LEFT)
 
-        tk.Button(self.capture_group, text="载入照片", command=self.load_image, font=FONT_UI_BOLD, padx=sx(16), pady=sx(7), **button_style(PRIMARY)).pack(side=tk.LEFT, padx=sx(15))
+        rounded_button(self.capture_group, "载入照片", self.load_image, PRIMARY, padx=18, pady=8, radius=13).pack(side=tk.LEFT, padx=sx(15))
 
-        self.mask_var = tk.StringVar(value="蓝色"); self.mode_var = tk.StringVar(value="无背光")
+        self.mask_var = tk.StringVar(value="蓝色"); self.mode_var = tk.StringVar(value="有背光")
         filter_group = tk.Frame(self.capture_group, bg=BAR_BG)
         filter_group.pack(side=tk.LEFT, padx=sp((0, 8)))
         self.m_cb = ttk.Combobox(filter_group, textvariable=self.mask_var, values=["蓝色", "绿色", "黄色", "红色", "紫色", "白色", "黑色"], state="readonly", width=9, font=FONT_UI)
@@ -215,14 +360,11 @@ class RecipeRecorderTab(tk.Frame):
 
         self.layer_vars = []
         for i, name in enumerate(self.phys_layers):
-            unit = tk.Frame(self.layer_group, bg=BAR_BG)
-            unit.pack(side=tk.LEFT, padx=sx(4))
             var = tk.IntVar(); self.layer_vars.append(var)
             if i == 3: var.set(1) # 默认勾选 FR4 基板层
-            large_checkbutton(unit, var, bg=BAR_BG).pack(side=tk.TOP, pady=sp((0, 2)))
-            tk.Label(unit, text=name, font=FONT_MONO_BOLD, fg=TEXT_COLOR, bg=BAR_BG).pack(side=tk.TOP)
+            ColorCheckBlock(self.layer_group, name, var, font=FONT_MONO_BOLD, width=54, height=40, radius=11).pack(side=tk.LEFT, padx=sx(3))
 
-        tk.Button(self.save_group, text="录入当前色块配方", command=self.save_recipe, font=FONT_UI_BOLD, padx=sx(14), pady=sx(7), **button_style(SECONDARY)).pack(side=tk.LEFT, padx=sx(8))
+        rounded_button(self.save_group, "录入当前色块配方", self.save_recipe, SECONDARY, padx=16, pady=8, radius=13).pack(side=tk.LEFT, padx=sx(8))
         top_bar.bind("<Configure>", self._schedule_toolbar_layout)
         self.after_idle(self._layout_toolbar)
 
@@ -230,8 +372,8 @@ class RecipeRecorderTab(tk.Frame):
         main_content = tk.Frame(self, bg=APP_BG)
         main_content.pack(fill=tk.BOTH, expand=True)
 
-        # 左侧控制面板 (固定 560px 宽度，给 HEX 信息留出横向空间)
-        self.side_panel = tk.Frame(main_content, padx=sx(20), pady=sx(15), width=sx(560), bg=PANEL_BG)
+        # 左侧控制面板，保持紧凑宽度，把更多空间留给图片预览。
+        self.side_panel = tk.Frame(main_content, padx=sx(16), pady=sx(15), width=sx(440), bg=PANEL_BG)
         self.side_panel.pack(side=tk.LEFT, fill=tk.Y)
         self.side_panel.pack_propagate(False)
 
@@ -386,7 +528,7 @@ class RecipeRecorderTab(tk.Frame):
             f = tk.Frame(self.scroll_inner, bg=CARD_BG, pady=sx(7), bd=1, relief=tk.SOLID, highlightbackground=BORDER_COLOR)
             f.pack(fill=tk.X, pady=sx(3), padx=sx(6))
             hex_color = rgb_to_hex(r["rgb"])
-            tk.Label(f, bg=hex_color, width=5, height=2).pack(side=tk.LEFT, padx=sp((12, 8)))
+            color_swatch(f, hex_color, width=32, height=32).pack(side=tk.LEFT, padx=sp((12, 8)))
             tk.Label(f, text=hex_color, font=FONT_MONO_BOLD, bg=CARD_BG, fg=TEXT_COLOR, width=9, anchor="w").pack(side=tk.LEFT)
             layer_bar(f, r.get("layers", []), bg=CARD_BG).pack(side=tk.LEFT, padx=sp((4, 8)))
             tk.Button(f, text="×", command=lambda item=r: self.delete_entry(item), font=FONT_UI_BOLD, fg=DANGER, bg=CARD_BG, activeforeground=DANGER, activebackground=CARD_BG, bd=0, cursor="hand2").pack(side=tk.RIGHT, padx=sx(14))
@@ -426,6 +568,7 @@ class ColorMapperTab(tk.Frame):
         self.mark_br = tk.IntVar(value=0)
         self.mark_size_var = tk.StringVar(value="0")
         self.denoise_var = tk.IntVar(value=0)
+        self.lceda_var = tk.IntVar(value=1)
         
         self.setup_ui()
 
@@ -442,21 +585,21 @@ class ColorMapperTab(tk.Frame):
         self.filter_group.pack(in_=self.toolbar_line1, side=tk.LEFT)
         self.action_group.pack(in_=self.toolbar_line1, side=tk.LEFT)
         self.settings_group.pack(in_=self.toolbar_line1, side=tk.LEFT)
-        self.mask_var = tk.StringVar(value="蓝色"); self.mode_var = tk.StringVar(value="无背光")
+        self.mask_var = tk.StringVar(value="蓝色"); self.mode_var = tk.StringVar(value="有背光")
         
         ttk.Combobox(self.filter_group, textvariable=self.mask_var, values=["蓝色", "绿色", "黄色", "红色", "紫色", "白色", "黑色"], state="readonly", width=10, font=FONT_UI).pack(side=tk.LEFT, padx=sx(10))
         ttk.Combobox(self.filter_group, textvariable=self.mode_var, values=["无背光", "有背光"], state="readonly", width=10, font=FONT_UI).pack(side=tk.LEFT, padx=sx(5))
         
-        tk.Button(self.action_group, text="提取色卡", command=self.fetch_recipes, font=FONT_UI_BOLD, padx=sx(14), pady=sx(7), **button_style(PRIMARY)).pack(side=tk.LEFT, padx=sx(8))
-        tk.Button(self.action_group, text="载入图片", command=self.load_image, font=FONT_UI_BOLD, padx=sx(14), pady=sx(7), **button_style(SECONDARY)).pack(side=tk.LEFT, padx=sx(8))
-        tk.Button(self.action_group, text="效果预览", command=self.process_alchemy, font=FONT_UI_BOLD, padx=sx(14), pady=sx(7), **button_style(ACCENT)).pack(side=tk.LEFT, padx=sx(8))
-        tk.Button(self.action_group, text="导出图纸", command=self.export_layers, font=FONT_UI_BOLD, padx=sx(14), pady=sx(7), **button_style(SUCCESS)).pack(side=tk.LEFT, padx=sx(8))
+        rounded_button(self.action_group, "提取色卡", self.fetch_recipes, PRIMARY, padx=16, pady=8, radius=13).pack(side=tk.LEFT, padx=sx(8))
+        rounded_button(self.action_group, "载入图片", self.load_image, SECONDARY, padx=16, pady=8, radius=13).pack(side=tk.LEFT, padx=sx(8))
+        rounded_button(self.action_group, "效果预览", self.process_alchemy, ACCENT, padx=16, pady=8, radius=13).pack(side=tk.LEFT, padx=sx(8))
+        rounded_button(self.action_group, "导出图纸", self.export_layers, SUCCESS, padx=16, pady=8, radius=13).pack(side=tk.LEFT, padx=sx(8))
 
-        # 原点标定设置移到顶部菜单，避免被长色卡列表挤到侧栏底部。
+        # 原点设定移到顶部菜单，避免被长色卡列表挤到侧栏底部。
         self.cal_frame = tk.Frame(self.settings_group, padx=sx(10), pady=sx(4), bg=BAR_BG, highlightbackground=BORDER_COLOR, highlightthickness=1)
         self.cal_frame.pack(side=tk.LEFT, padx=sp((8, 10)), pady=0)
 
-        tk.Label(self.cal_frame, text="原点标定设置", bg=BAR_BG, fg=TEXT_COLOR, font=FONT_UI_BOLD).pack(side=tk.LEFT, padx=sp((0, 12)))
+        tk.Label(self.cal_frame, text="原点设定", bg=BAR_BG, fg=TEXT_COLOR, font=FONT_UI_BOLD).pack(side=tk.LEFT, padx=sp((0, 12)))
 
         mark_grid = tk.Frame(self.cal_frame, bg=BAR_BG)
         mark_grid.pack(side=tk.LEFT)
@@ -464,20 +607,20 @@ class ColorMapperTab(tk.Frame):
         corners = [("左上", self.mark_tl), ("右上", self.mark_tr), ("左下", self.mark_bl), ("右下", self.mark_br)]
         for i, (name, var) in enumerate(corners):
             mark_grid.columnconfigure(i, weight=1)
-            unit = tk.Frame(mark_grid, bg=BAR_BG)
-            unit.grid(row=0, column=i, sticky="ew", padx=sx(5))
-            large_checkbutton(unit, var, bg=BAR_BG).pack(side=tk.TOP, pady=sp((0, 3)))
-            tk.Label(unit, text=name, bg=BAR_BG, fg=TEXT_COLOR, font=FONT_UI).pack(side=tk.TOP)
+            ColorCheckBlock(mark_grid, name, var, font=FONT_UI_BOLD, width=58, height=40, radius=11).grid(row=0, column=i, sticky="ew", padx=sx(3))
 
         size_frame = tk.Frame(self.cal_frame, bg=BAR_BG)
         size_frame.pack(side=tk.LEFT, padx=sp((14, 0)))
-        tk.Label(size_frame, text="标定边长(px)", bg=BAR_BG, fg=TEXT_COLOR, font=FONT_UI).pack(side=tk.TOP)
-        tk.Entry(size_frame, textvariable=self.mark_size_var, font=FONT_MONO_LARGE, width=6, justify=tk.CENTER).pack(side=tk.TOP, pady=sp((2, 0)))
+        tk.Label(size_frame, text="边长(px)", bg=BAR_BG, fg=TEXT_COLOR, font=FONT_UI).pack(side=tk.LEFT, padx=sp((0, 6)))
+        tk.Entry(size_frame, textvariable=self.mark_size_var, font=FONT_MONO_LARGE, width=6, justify=tk.CENTER).pack(side=tk.LEFT)
 
-        denoise_frame = tk.Frame(self.settings_group, padx=sx(10), pady=sx(4), bg=BAR_BG, highlightbackground=BORDER_COLOR, highlightthickness=1)
+        denoise_frame = tk.Frame(self.settings_group, padx=sx(8), pady=sx(4), bg=BAR_BG, highlightbackground=BORDER_COLOR, highlightthickness=1)
         denoise_frame.pack(side=tk.LEFT, padx=sp((0, 10)), pady=0)
-        tk.Label(denoise_frame, text="导出降噪设置", bg=BAR_BG, fg=TEXT_COLOR, font=FONT_UI_BOLD).pack(side=tk.LEFT, padx=sp((0, 10)))
-        large_checkbutton(denoise_frame, self.denoise_var, bg=BAR_BG).pack(side=tk.LEFT)
+        ColorCheckBlock(denoise_frame, "导出降噪", self.denoise_var).pack(side=tk.LEFT)
+
+        lceda_frame = tk.Frame(self.settings_group, padx=sx(8), pady=sx(4), bg=BAR_BG, highlightbackground=BORDER_COLOR, highlightthickness=1)
+        lceda_frame.pack(side=tk.LEFT, padx=sp((0, 10)), pady=0)
+        ColorCheckBlock(lceda_frame, "立创EDA", self.lceda_var).pack(side=tk.LEFT)
         top_bar.bind("<Configure>", self._schedule_toolbar_layout)
         self.after_idle(self._layout_toolbar)
 
@@ -485,7 +628,7 @@ class ColorMapperTab(tk.Frame):
         main.pack(fill=tk.BOTH, expand=True)
 
         # 带有滚动功能的侧边面板
-        self.side_outer = tk.Frame(main, width=sx(560), bg=PANEL_BG)
+        self.side_outer = tk.Frame(main, width=sx(440), bg=PANEL_BG)
         self.side_outer.pack(side=tk.LEFT, fill=tk.Y)
         self.side_outer.pack_propagate(False)
         
@@ -577,15 +720,20 @@ class ColorMapperTab(tk.Frame):
         scroll_pos = self.side_canvas.yview()[0] if preserve_scroll else 0
         for w in self.list_frame.winfo_children(): w.destroy()
         for i, r in enumerate(self.available_recipes):
-            f = tk.Frame(self.list_frame, pady=sx(7), bd=1, relief=tk.SOLID, bg=CARD_BG, highlightbackground=BORDER_COLOR)
-            f.pack(fill=tk.X, pady=sx(3), padx=sx(2))
+            f = tk.Frame(self.list_frame, pady=sx(6), bd=1, relief=tk.SOLID, bg=CARD_BG, highlightbackground=BORDER_COLOR)
+            f.pack(fill=tk.X, pady=sx(3), padx=sx(1))
             recipe_hex = rgb_to_hex(r["rgb"])
             mapped_rgb = self.mapping[i]
             mapped_hex = rgb_to_hex(mapped_rgb) if mapped_rgb else "未映射"
 
-            tk.Label(f, bg=recipe_hex, width=5, height=2).pack(side=tk.LEFT, padx=sp((12, 8)))
-            tk.Label(f, text=recipe_hex, font=FONT_MONO_BOLD, bg=CARD_BG, fg=TEXT_COLOR, width=9, anchor="w").pack(side=tk.LEFT)
-            tk.Button(f, text="映射", font=FONT_SMALL_BOLD, padx=sx(10), pady=sx(4), command=lambda idx=i: self.set_active(idx), **button_style(PRIMARY)).pack(side=tk.LEFT, padx=sx(8))
+            color_swatch(f, recipe_hex, width=32, height=32).pack(side=tk.LEFT, padx=sp((8, 5)))
+            tk.Label(f, text=recipe_hex, font=FONT_MONO_BOLD, bg=CARD_BG, fg=TEXT_COLOR, width=8, anchor="w").pack(side=tk.LEFT, padx=sp((0, 3)))
+            rounded_button(f, "映射", lambda idx=i: self.set_active(idx), PRIMARY, font=FONT_SMALL_BOLD, padx=9, pady=4, radius=9).pack(side=tk.LEFT, padx=sp((2, 8)))
+            if mapped_rgb:
+                color_swatch(f, rgb_to_hex(mapped_rgb), width=32, height=32).pack(side=tk.LEFT, padx=sp((0, 5)))
+            else:
+                color_swatch(f, SURFACE_BG, width=32, height=32, outline="#DDD1C5").pack(side=tk.LEFT, padx=sp((0, 5)))
+            tk.Label(f, text=mapped_hex, font=FONT_MONO_BOLD, bg=CARD_BG, fg=TEXT_COLOR if mapped_rgb else MUTED_TEXT, width=8, anchor="w").pack(side=tk.LEFT, padx=sp((0, 4)))
             tk.Button(
                 f,
                 text="取消",
@@ -599,10 +747,7 @@ class ColorMapperTab(tk.Frame):
                 relief=tk.FLAT,
                 bd=0,
                 cursor="hand2"
-            ).pack(side=tk.RIGHT, padx=sp((4, 12)))
-            tk.Label(f, text=mapped_hex, font=FONT_MONO_BOLD, bg=CARD_BG, fg=TEXT_COLOR, width=9, anchor="w").pack(side=tk.RIGHT, padx=sp((4, 6)))
-            if mapped_rgb:
-                tk.Label(f, bg=rgb_to_hex(mapped_rgb), width=5, height=2).pack(side=tk.RIGHT, padx=sp((4, 0)))
+            ).pack(side=tk.LEFT, padx=sp((0, 6)))
         self.side_canvas.configure(scrollregion=self.side_canvas.bbox("all"))
         self.side_canvas.yview_moveto(scroll_pos)
 
@@ -688,6 +833,10 @@ class ColorMapperTab(tk.Frame):
         if not valid: return
         d = filedialog.askdirectory()
         if not d: return
+        lceda_mode = bool(self.lceda_var.get())
+        out_dir = os.path.join(d, "立创EDA") if lceda_mode else d
+        if lceda_mode:
+            os.makedirs(out_dir, exist_ok=True)
         
         data = np.array(self.original_img); pixels = data.reshape(-1, 3)
         src_pal = np.array([self.mapping[i] for i in valid], dtype=np.uint8)
@@ -700,6 +849,7 @@ class ColorMapperTab(tk.Frame):
             sz = 0
         
         for i, pi in enumerate(p_idxs):
+            layer_name = names[i]
             l_map = np.array([self.available_recipes[vi]["layers"][pi] for vi in valid])
             
             # --- v3.3 双向过滤逻辑 ---
@@ -712,6 +862,9 @@ class ColorMapperTab(tk.Frame):
 
             if self.denoise_var.get():
                 bw_data = np.array(Image.fromarray(bw_data).filter(ImageFilter.MedianFilter(size=3)))
+
+            if lceda_mode and layer_name in ("BL", "BM", "BS"):
+                bw_data = np.fliplr(bw_data).copy()
             
             # 添加物理标定点（三角形定位符）[cite: 3]
             if sz > 0:
@@ -724,15 +877,113 @@ class ColorMapperTab(tk.Frame):
                     for y in range(s): bw_data[h-s+y, 0:s-y] = 255
                 if self.mark_br.get():
                     for y in range(s): bw_data[h-s+y, w-(s-y):w] = 255
+
+            if lceda_mode:
+                bw_data = 255 - bw_data
             
-            Image.fromarray(bw_data).save(os.path.join(d, f"Layer_{names[i]}.png"))
+            Image.fromarray(bw_data).save(os.path.join(out_dir, f"Layer_{layer_name}.png"))
             
         denoise_text = "，并已应用导出降噪" if self.denoise_var.get() else ""
-        messagebox.showinfo("完成", f"导出成功：已自动过滤无图案的空层与全覆盖层{denoise_text}。")
+        if lceda_mode:
+            messagebox.showinfo("完成", f"立创EDA导出成功：已自动过滤无图案的空层与全覆盖层，底层已左右翻转，图纸已反相，文件位于“立创EDA”文件夹{denoise_text}。")
+        else:
+            messagebox.showinfo("完成", f"导出成功：已自动过滤无图案的空层与全覆盖层{denoise_text}。")
 
 # ==========================================
 # 主程序生命周期管理
 # ==========================================
+class RoundedTab(tk.Canvas):
+    def __init__(self, master, text, command, width, height, radius, font):
+        super().__init__(
+            master,
+            width=width,
+            height=height,
+            bg=master.cget("bg"),
+            bd=0,
+            highlightthickness=0,
+            cursor="hand2"
+        )
+        self.text = text
+        self.command = command
+        self.tab_width = width
+        self.tab_height = height
+        self.radius = radius
+        self.tab_font = font
+        self.selected = False
+        self.bind("<Button-1>", lambda _event: self.command())
+        self.bind("<Configure>", lambda _event: self._draw())
+        self._draw()
+
+    def set_selected(self, selected):
+        self.selected = selected
+        self._draw()
+
+    def _draw(self):
+        self.delete("all")
+        fill = SELECTED if self.selected else TAB_IDLE
+        outline = SELECTED if self.selected else BORDER_COLOR
+        fg = BUTTON_TEXT if self.selected else TEXT_COLOR
+        inset = sx(1)
+        rounded_rect(
+            self,
+            inset,
+            inset,
+            self.tab_width - inset,
+            self.tab_height - inset,
+            self.radius,
+            fill=fill,
+            outline=outline,
+            width=sx(1)
+        )
+        self.create_text(
+            self.tab_width // 2,
+            self.tab_height // 2,
+            text=self.text,
+            fill=fg,
+            font=self.tab_font
+        )
+
+class TabbedPageHost(tk.Frame):
+    def __init__(self, master):
+        super().__init__(master, bg=APP_BG)
+        self.tabs = []
+        self.pages = []
+        self.active_index = None
+
+        self.tab_bar = tk.Frame(self, bg=APP_BG)
+        self.tab_bar.pack(side=tk.TOP, fill=tk.X, padx=sx(4), pady=sp((0, 8)))
+
+        self.content = tk.Frame(self, bg=APP_BG)
+        self.content.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+
+    def add(self, page, text):
+        index = len(self.pages)
+        tab = RoundedTab(
+            self.tab_bar,
+            text=text,
+            command=lambda idx=index: self.select(idx),
+            width=sx(224),
+            height=sx(64),
+            radius=sx(19),
+            font=FONT_TAB
+        )
+        tab.pack(side=tk.LEFT, padx=sp((0, 8)))
+        self.tabs.append(tab)
+        self.pages.append(page)
+
+        if self.active_index is None:
+            self.select(index)
+
+    def select(self, index):
+        if self.active_index == index:
+            return
+        if self.active_index is not None:
+            self.pages[self.active_index].pack_forget()
+            self.tabs[self.active_index].set_selected(False)
+        self.active_index = index
+        self.tabs[index].set_selected(True)
+        self.pages[index].pack(fill=tk.BOTH, expand=True)
+
 class PCBMasterApp:
     def __init__(self, root):
         init_db()
@@ -765,19 +1016,13 @@ class PCBMasterApp:
         self.root.option_add('*TCombobox*Listbox.foreground', TEXT_COLOR)
         self.root.option_add('*TCombobox*Listbox.selectBackground', SELECTED)
         self.root.option_add('*TCombobox*Listbox.selectForeground', BUTTON_TEXT)
-        
-        # 标签页 Tab 样式锁定：禁止选中时的形变
-        style.configure("TNotebook", background=APP_BG, borderwidth=0)
-        tab_padding = [sx(52), sx(18)]
-        style.configure("TNotebook.Tab", padding=tab_padding, font=FONT_TAB, background=BAR_BG, foreground=TEXT_COLOR, bordercolor=BORDER_COLOR)
-        style.map("TNotebook.Tab", background=[("selected", SELECTED)], foreground=[("selected", BUTTON_TEXT)], padding=[("selected", tab_padding)], expand=[("selected", [0, 0, 0, 0])]) 
 
-        self.notebook = ttk.Notebook(self.root)
+        self.notebook = TabbedPageHost(self.root)
         self.notebook.pack(fill=tk.BOTH, expand=True, padx=sx(12), pady=sx(12))
         
         # 加载核心功能模块
-        self.notebook.add(RecipeRecorderTab(self.notebook), text="色卡录入")
-        self.notebook.add(ColorMapperTab(self.notebook), text="色彩聚集")
+        self.notebook.add(RecipeRecorderTab(self.notebook.content), text="色卡录入")
+        self.notebook.add(ColorMapperTab(self.notebook.content), text="色彩聚集")
 
 if __name__ == "__main__":
     root = tk.Tk()
