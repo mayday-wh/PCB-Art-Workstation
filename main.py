@@ -11,14 +11,16 @@ import sys
 # 0. 系统级环境配置
 # ==========================================
 try:
-    # 针对 Windows 平台的高 DPI 适配，防止 2K/4K 屏幕下界面模糊[cite: 3]
+    # 针对 Windows 平台的高 DPI 适配，防止 2K/4K 屏幕下界面模糊。
     ctypes.windll.shcore.SetProcessDpiAwareness(1)
-except:
-    try: ctypes.windll.user32.SetProcessDPIAware()
-    except: pass
+except Exception:
+    try:
+        ctypes.windll.user32.SetProcessDPIAware()
+    except Exception:
+        pass
 
 # 核心数据库文件，存储 RGB 与物理层 (TS, TM, TL, FR4, BL, BM, BS) 的对应关系
-APP_VERSION = "4.1"
+APP_VERSION = "4.1.1"
 BASE_DIR = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else os.path.dirname(os.path.abspath(__file__))
 DB_FILE = os.path.join(BASE_DIR, "colors.json")
 
@@ -51,6 +53,11 @@ FONT_MONO_LARGE = ("Consolas", 13, "bold")
 FONT_TAB = ("微软雅黑", 17, "bold")
 UI_SCALE = 1.0
 BASE_TK_SCALING = 1.75
+SIDEBAR_WIDTH_RATIO = 0.27
+SIDEBAR_MIN_WIDTH = 420
+SIDEBAR_MAX_WIDTH = 720
+LCEDA_FLIP_LAYERS = {"BL", "BM", "BS"}
+LCEDA_INVERT_LAYERS = {"TS", "TL", "BL", "BS"}
 
 def sx(value):
     """Scale fixed pixel values while keeping very small positive values visible."""
@@ -64,6 +71,13 @@ def sx(value):
 def sp(values):
     return tuple(sx(v) for v in values)
 
+def sidebar_width_for(container_width):
+    """Return a readable, responsive left-panel width for 2K and fullscreen layouts."""
+    if container_width <= 1:
+        return SIDEBAR_MIN_WIDTH
+    proportional_width = int(container_width * SIDEBAR_WIDTH_RATIO)
+    return max(SIDEBAR_MIN_WIDTH, min(SIDEBAR_MAX_WIDTH, proportional_width))
+
 def configure_screen_scaling(root):
     """Apply one screen-based scale to the window, Tk fonts, and fixed pixel spacing."""
     global UI_SCALE
@@ -76,7 +90,7 @@ def configure_screen_scaling(root):
     win_w = min(sx(2000), int(screen_w * 0.92))
     win_h = min(sx(1200), int(screen_h * 0.88))
     root.geometry(f"{win_w}x{win_h}+{(screen_w-win_w)//2}+{(screen_h-win_h)//2}")
-    root.minsize(sx(1000), sx(700))
+    root.minsize(max(sx(1000), SIDEBAR_MIN_WIDTH + sx(560)), max(sx(700), 700))
 
 def button_style(bg=PRIMARY, fg=BUTTON_TEXT):
     return {
@@ -371,9 +385,10 @@ class RecipeRecorderTab(tk.Frame):
         # --- 主显示区 (左右分栏) ---
         main_content = tk.Frame(self, bg=APP_BG)
         main_content.pack(fill=tk.BOTH, expand=True)
+        main_content.bind("<Configure>", self._resize_side_panel)
 
         # 左侧控制面板，保持紧凑宽度，把更多空间留给图片预览。
-        self.side_panel = tk.Frame(main_content, padx=sx(16), pady=sx(15), width=sx(440), bg=PANEL_BG)
+        self.side_panel = tk.Frame(main_content, padx=sx(16), pady=sx(15), width=SIDEBAR_MIN_WIDTH, bg=PANEL_BG)
         self.side_panel.pack(side=tk.LEFT, fill=tk.Y)
         self.side_panel.pack_propagate(False)
 
@@ -406,6 +421,9 @@ class RecipeRecorderTab(tk.Frame):
     def _on_canvas_configure(self, event):
         """强制内部列表框架宽度等于 Canvas 宽度，解决缩放导致的宽度塌陷"""
         self.list_canvas.itemconfig(self.canvas_win, width=event.width)
+
+    def _resize_side_panel(self, event):
+        self.side_panel.configure(width=sidebar_width_for(event.width))
 
     def _bind_list_mousewheel(self, event):
         self.list_canvas.bind_all("<MouseWheel>", self._on_list_mousewheel)
@@ -547,7 +565,7 @@ class RecipeRecorderTab(tk.Frame):
 # ==========================================
 class ColorMapperTab(tk.Frame):
     """
-    色彩映射模块：将原图色块聚集到物理层叠，并生成带标定的黑白生产图纸[cite: 3]。
+    色彩映射模块：将原图色块聚集到物理层叠，并生成带标定的黑白生产图纸。
     """
     def __init__(self, master):
         super().__init__(master)
@@ -561,7 +579,7 @@ class ColorMapperTab(tk.Frame):
         self.toolbar_layout_job = None
         self.preview_resize_job = None
         
-        # v3.3 标定控制变量[cite: 3]
+        # v3.3 标定控制变量
         self.mark_tl = tk.IntVar(value=0)
         self.mark_tr = tk.IntVar(value=0)
         self.mark_bl = tk.IntVar(value=0)
@@ -626,9 +644,10 @@ class ColorMapperTab(tk.Frame):
 
         main = tk.Frame(self, bg=APP_BG)
         main.pack(fill=tk.BOTH, expand=True)
+        main.bind("<Configure>", self._resize_side_panel)
 
         # 带有滚动功能的侧边面板
-        self.side_outer = tk.Frame(main, width=sx(440), bg=PANEL_BG)
+        self.side_outer = tk.Frame(main, width=SIDEBAR_MIN_WIDTH, bg=PANEL_BG)
         self.side_outer.pack(side=tk.LEFT, fill=tk.Y)
         self.side_outer.pack_propagate(False)
         
@@ -662,6 +681,9 @@ class ColorMapperTab(tk.Frame):
         self.right_label = tk.Label(preview_frame, text="效果预览", bg=PREVIEW_BG, fg=MUTED_TEXT, bd=1, relief=tk.SOLID, font=FONT_PREVIEW)
         self.right_label.place(relx=0.51, rely=0.02, relwidth=0.48, relheight=0.96)
         self.right_label.bind("<Configure>", self._schedule_preview_resize)
+
+    def _resize_side_panel(self, event):
+        self.side_outer.configure(width=sidebar_width_for(event.width))
 
     def _schedule_toolbar_layout(self, event=None):
         if self.toolbar_layout_job:
@@ -777,7 +799,7 @@ class ColorMapperTab(tk.Frame):
             self.refresh_mapping_list()
 
     def load_image(self):
-        """原图载入并自动计算 1/100 标定尺寸[cite: 3]"""
+        """原图载入并自动计算 1/100 标定尺寸"""
         p = filedialog.askopenfilename()
         if p:
             self.original_img = Image.open(p).convert("RGB")
@@ -826,7 +848,7 @@ class ColorMapperTab(tk.Frame):
     def export_layers(self):
         """
         物理层导出核心逻辑：
-        v3.3 特色：跳过空图层（全黑）以及全覆盖图层（全白），仅保留有图案内容的中间层。[cite: 3]
+        v3.3 特色：跳过空图层（全黑）以及全覆盖图层（全白），仅保留有图案内容的中间层。
         """
         if not self.original_img: return
         valid = [i for i in self.mapping if self.mapping[i]]
@@ -853,8 +875,8 @@ class ColorMapperTab(tk.Frame):
             l_map = np.array([self.available_recipes[vi]["layers"][pi] for vi in valid])
             
             # --- v3.3 双向过滤逻辑 ---
-            if not np.any(l_map > 0): continue    # 过滤空层[cite: 3]
-            if np.all(l_map > 0): continue        # 过滤全覆盖层[cite: 3]
+            if not np.any(l_map > 0): continue    # 过滤空层
+            if np.all(l_map > 0): continue        # 过滤全覆盖层
             
             # 生成 0/255 的黑白像素数据
             bw_data = (l_map[idx] * 255).reshape(data.shape[:2]).astype(np.uint8)
@@ -863,10 +885,10 @@ class ColorMapperTab(tk.Frame):
             if self.denoise_var.get():
                 bw_data = np.array(Image.fromarray(bw_data).filter(ImageFilter.MedianFilter(size=3)))
 
-            if lceda_mode and layer_name in ("BL", "BM", "BS"):
+            if lceda_mode and layer_name in LCEDA_FLIP_LAYERS:
                 bw_data = np.fliplr(bw_data).copy()
             
-            # 添加物理标定点（三角形定位符）[cite: 3]
+            # 添加物理标定点（三角形定位符）
             if sz > 0:
                 s = min(sz, h, w // 2)
                 if self.mark_tl.get():
@@ -878,14 +900,14 @@ class ColorMapperTab(tk.Frame):
                 if self.mark_br.get():
                     for y in range(s): bw_data[h-s+y, w-(s-y):w] = 255
 
-            if lceda_mode:
+            if lceda_mode and layer_name in LCEDA_INVERT_LAYERS:
                 bw_data = 255 - bw_data
             
             Image.fromarray(bw_data).save(os.path.join(out_dir, f"Layer_{layer_name}.png"))
             
         denoise_text = "，并已应用导出降噪" if self.denoise_var.get() else ""
         if lceda_mode:
-            messagebox.showinfo("完成", f"立创EDA导出成功：已自动过滤无图案的空层与全覆盖层，底层已左右翻转，图纸已反相，文件位于“立创EDA”文件夹{denoise_text}。")
+            messagebox.showinfo("完成", f"立创EDA导出成功：已自动过滤无图案的空层与全覆盖层，底层已左右翻转，铜层与丝印层已反相，阻焊层按立创EDA规则导出，文件位于“立创EDA”文件夹{denoise_text}。")
         else:
             messagebox.showinfo("完成", f"导出成功：已自动过滤无图案的空层与全覆盖层{denoise_text}。")
 
@@ -997,7 +1019,7 @@ class PCBMasterApp:
         # 全局样式深度配置 (CSS 风格封装)
         style = ttk.Style(); style.theme_use("clam")
         
-        # 下拉框高度同步修正：通过内边距 padding 强制撑起外框[cite: 3]
+        # 下拉框高度同步修正：通过内边距 padding 强制撑起外框。
         style.configure(
             "TCombobox",
             padding=sx(9),
